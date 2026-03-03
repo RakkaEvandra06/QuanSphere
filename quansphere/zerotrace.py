@@ -15,8 +15,7 @@ NONCE_SIZE = 16
 TAG_SIZE = 16
 PBKDF2_ITER = 200000
 
-
-class QuanSphere:
+class zerotrace:
 
     # ================= AES =================
     @staticmethod
@@ -216,7 +215,7 @@ class QuanSphere:
 
 # ================= CLI =================
 def main():
-    parser = argparse.ArgumentParser(description="QuanSphere v3 - Hardened Crypto Toolkit")
+    parser = argparse.ArgumentParser(description="ZeroTrace v3 - Hardened Crypto Toolkit - Rakka06Evandra")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("genrsa")
@@ -256,42 +255,42 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "genrsa":
-        QuanSphere.generate_rsa()
+        zerotrace.generate_rsa()
 
     elif args.cmd == "aes":
         if args.encrypt and args.out:
-            QuanSphere.aes_encrypt(args.encrypt, args.out, args.password, args.save_key)
+            zerotrace.aes_encrypt(args.encrypt, args.out, args.password, args.save_key)
         elif args.decrypt and args.out:
-            QuanSphere.aes_decrypt(args.decrypt, args.out, args.key, args.password)
+            zerotrace.aes_decrypt(args.decrypt, args.out, args.key, args.password)
         else:
             print("[-] AES requires --encrypt/--decrypt and --out")
 
     elif args.cmd == "rsa":
         if args.encrypt and args.pub:
-            QuanSphere.rsa_encrypt(args.encrypt, args.pub)
+            zerotrace.rsa_encrypt(args.encrypt, args.pub)
         elif args.decrypt and args.priv:
-            QuanSphere.rsa_decrypt(args.decrypt, args.priv)
+            zerotrace.rsa_decrypt(args.decrypt, args.priv)
         else:
             print("[-] RSA requires proper parameters")
 
     elif args.cmd == "hybrid":
         if args.encrypt and args.out and args.pub:
-            QuanSphere.hybrid_encrypt(args.encrypt, args.out, args.pub)
+            zerotrace.hybrid_encrypt(args.encrypt, args.out, args.pub)
         elif args.decrypt and args.out and args.priv:
-            QuanSphere.hybrid_decrypt(args.decrypt, args.out, args.priv)
+            zerotrace.hybrid_decrypt(args.decrypt, args.out, args.priv)
         else:
             print("[-] Hybrid requires proper parameters")
 
     elif args.cmd == "sign":
         if args.file and args.priv:
-            QuanSphere.sign(args.file, args.priv)
+            zerotrace.sign(args.file, args.priv)
         elif args.verify and args.sig and args.pub:
-            QuanSphere.verify(args.verify, args.sig, args.pub)
+            zerotrace.verify(args.verify, args.sig, args.pub)
         else:
             print("[-] Sign/Verify parameters invalid")
 
     elif args.cmd == "hash":
-        QuanSphere.hash_file(args.file, args.algo)
+        zerotrace.hash_file(args.file, args.algo)
 
     else:
         parser.print_help()
