@@ -15,6 +15,7 @@ zerotracer/
 ├── zerotracer.py
 └── README.md
 ```
+
 ---
 
 ## ✨ Features
@@ -35,7 +36,6 @@ The project demonstrates practical implementation of modern cryptographic standa
 ```bash
 git clone https://github.com/RakkaEvandra06/QuanSphere.git
 cd QuanSphere
-cd zerotracer
 pip install -r requirements.txt
 ```
 
