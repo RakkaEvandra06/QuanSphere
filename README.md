@@ -1,4 +1,4 @@
-# 🔐 ZeroTrace v3 - Hardened Crypto Toolkit
+# 🔐 ZeroTracer v3 - Hardened Crypto Toolkit
 
 ZeroTrace v3 is a hardened cryptography toolkit engineered for secure data encryption built in Python.  
 It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), and SHA hashing.
@@ -8,11 +8,11 @@ It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), a
 ## 📦 Repository Structure
 
 ```bash
-quansphere/
+zerotracer/
 │
 ├── .gitignore
 ├── requirements.txt
-├── zerotrace.py
+├── zerotracer.py
 └── README.md
 ```
 ---
@@ -33,18 +33,30 @@ The project demonstrates practical implementation of modern cryptographic standa
 ## ⚙️ Installation
 
 ```bash
-git clone https://github.com/RakkaEvandra06/ZeroTrace.git
-cd zerotrace
+git clone https://github.com/RakkaEvandra06/QuanSphere.git
+cd QuanSphere
+cd zerotracer
 pip install -r requirements.txt
 ```
 
 ---
 
+## 🎯 Install the required package
+Run:
+```bash
+pip3 install pycryptodome
+```
+
+If you're on Kali Linux:
+```bash
+sudo apt install python3-pycryptodome
+```
+
 ## 🚀 Usage
 
 🔑 Generate RSA Key Pair
 ```bash
-python zerotrace.py genrsa
+python zerotracer.py genrsa
 ```
 Output:
 private.pem
@@ -53,54 +65,61 @@ public.pem
 🔐 AES Encryption
 Encrypt using password-based key derivation:
 ```bash
-python zerotrace.py aes --encrypt file.txt --out file.enc --password StrongPassword123
+python zerotracer.py aes --encrypt file.txt --out file.enc --password StrongPassword123
 ```
 
 Encrypt using randomly generated key:
 ```bash
-python zerotrace.py aes --encrypt file.txt --out file.enc --save-key
+python zerotracer.py aes --encrypt file.txt --out file.enc --save-key
 ```
 
 🔓 AES Decryption
 ```bash
-python zerotrace.py aes --decrypt file.enc --out file.txt --password StrongPassword123
+python zerotracer.py aes --decrypt file.enc --out file.txt --password StrongPassword123
 ```
 
 🔐 RSA Encryption (Short Message)
 ```bash
-python zerotrace.py rsa --encrypt "Sensitive Message" --pub public.pem
+python zerotracer.py rsa --encrypt "Sensitive Message" --pub public.pem
 ```
 
 🔓 RSA Decryption
 ```bash
-python zerotrace.py rsa --decrypt <base64_ciphertext> --priv private.pem
+python zerotracer.py rsa --decrypt <base64_ciphertext> --priv private.pem
 ```
 
 🔐 Hybrid Encryption (Recommended for Files)
+
 Encrypt:
 ```bash
-python zerotrace.py hybrid --encrypt document.pdf --out document.qhy --pub public.pem
+python zerotracer.py hybrid --encrypt document.pdf --out document.qhy --pub public.pem
 ```
 
 Decrypt:
 ```bash
-python zerotrace.py hybrid --decrypt document.qhy --out document.pdf --priv private.pem
+python zerotracer.py hybrid --decrypt document.qhy --out document.pdf --priv private.pem
 ```
 
 ✍ Digital Signature
 Sign a file:
 ```bash
-python zerotrace.py sign --file file.txt --priv private.pem
+python zerotracer.py sign --file file.txt --priv private.pem
 ```
 
 Verify signature:
 ```bash
-python zerotrace.py sign --verify file.txt --sig file.txt.sig --pub public.pem
+python zerotracer.py sign --verify file.txt --sig file.txt.sig --pub public.pem
 ```
 
 🧮 Hashing
+SHA-256
 ```bash
-python zerotrace.py hash --file file.txt --algo sha256
+python zerotracer.py hash --file file.txt --algo sha256
+```
+
+SHA-512
+```bash
+python zerotracer.py hash --file file.txt --algo sha512
 ```
 
 ---
