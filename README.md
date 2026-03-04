@@ -10,12 +10,11 @@ It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), a
 ## 📦 Repository Structure
 
 ```bash
-zerotracer/
 │
 ├── .gitignore
+├── README.md
 ├── requirements.txt
-├── zerotracer.py
-└── README.md
+└── zerotracer.py
 ```
 
 ---
@@ -41,18 +40,40 @@ cd QuanSphere
 pip install -r requirements.txt
 ```
 
----
-
 ## 🎯 Install the required package
-Run:
+
+Install pycryptodome for the Version Windows or Linux you're running:
+if you're on Windows:
 ```bash
-pip3 install pycryptodome
+python pip install pycryptodome
 ```
 
-If you're on Kali Linux:
+If you're on Linux:
 ```bash
 sudo apt install python3-pycryptodome
 ```
+
+## 🧪 Test Installation
+
+After installing, test:
+```bash
+python3 -c "from Crypto.Cipher import AES; print('OK')"
+```
+Output:
+If it prints OK, you're good.
+
+## 🚨 If it STILL fails
+
+Quick One-Command Version
+```bash
+sudo apt install python3-venv -y
+python3 -m venv venv
+source venv/bin/activate
+pip install pycryptodome
+python zerotracer.py
+```
+
+---
 
 ## 🚀 Usage
 
