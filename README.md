@@ -1,3 +1,5 @@
+<img width="1140" height="228" alt="ascii-art-text (quansphere)" src="https://github.com/user-attachments/assets/54c24816-56d0-4ed1-a7c8-2c16221199a2" />
+
 # 🔐 ZeroTracer v3 - Hardened Crypto Toolkit
 
 ZeroTrace v3 is a hardened cryptography toolkit engineered for secure data encryption built in Python.  
