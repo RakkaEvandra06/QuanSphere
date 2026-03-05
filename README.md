@@ -9,7 +9,6 @@
       <stop offset="100%" stop-color="#2c5364"></stop>
     </linearGradient>
 
-    <!-- Glow Effect -->
   <filter id="glow">
       <feGaussianBlur stdDeviation="4" result="coloredBlur"></feGaussianBlur>
       <feMerge>
