@@ -1,9 +1,72 @@
-<img width="1114" height="228" alt="ascii-art-text (zerotracer)" src="https://github.com/user-attachments/assets/2884d2e9-b0e1-4f79-82b0-892632b97d69" />
+<svg width="1200" height="300" xmlns="http://www.w3.org/2000/svg">
 
-# 🔐 ZeroTracer v3 - Hardened Crypto Toolkit
+  <defs>
+    <!-- Animated Gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f2027">
+        <animate attributeName="stop-color"
+                 values="#0f2027;#203a43;#2c5364;#0f2027"
+                 dur="8s"
+                 repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" stop-color="#2c5364"/>
+    </linearGradient>
 
-ZeroTrace v3 is a hardened cryptography toolkit engineered for secure data encryption built in Python.  
-It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), and SHA hashing.
+  <!-- Glow Effect -->
+<filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+</filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="300" fill="url(#bgGradient)" />
+
+  <!-- Animated Scan Line -->
+  <rect x="0" y="0" width="1200" height="5" fill="#00ffd5" opacity="0.6">
+    <animate attributeName="y"
+             from="0"
+             to="300"
+             dur="4s"
+             repeatCount="indefinite" />
+  </rect>
+
+  <!-- Title -->
+  <text x="50%" y="45%"
+        font-size="60"
+        text-anchor="middle"
+        fill="white"
+        font-family="Arial"
+        font-weight="bold"
+        filter="url(#glow)">
+    ZeroTrace v4
+  </text>
+
+  <!-- Subtitle -->
+  <text x="50%" y="65%"
+        font-size="24"
+        text-anchor="middle"
+        fill="#00ffd5"
+        font-family="Arial">
+    Hybrid Encryption • Secure File Protection • Enterprise CLI Security Tool
+  </text>
+
+</svg>
+
+![Security Rating](https://img.shields.io/badge/Security%20Rating-A%2B-brightgreen)
+![Encryption](https://img.shields.io/badge/Encryption-AES--256%20%7C%20RSA--4096-blue)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![License](https://img.shields.io/github/license/RakkaEvandra06/QuanSphere)
+
+---
+
+# 🔐 ZeroTracer v4 - Hardened Crypto Toolkit
+
+ZeroTrace v4 is a hardened cryptography toolkit engineered for secure data encryption built in Python.  
+It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), and SHA hashing with enhanced security validation..
 
 ---
 
@@ -38,6 +101,7 @@ The project demonstrates practical implementation of modern cryptographic standa
 git clone https://github.com/RakkaEvandra06/QuanSphere.git
 cd QuanSphere
 pip install -r requirements.txt
+python3 zerotrace.py --help
 ```
 
 ## 🎯 Install the required package
@@ -81,9 +145,6 @@ python zerotracer.py
 ```bash
 python zerotracer.py genrsa
 ```
-Output:
-private.pem
-public.pem
 
 🔐 AES Encryption
 Encrypt using password-based key derivation:
@@ -150,3 +211,4 @@ python zerotracer.py hash --file file.txt --algo sha512
 ## ⚠️ Disclaimer
 
 This toolkit is developed for educational and research purposes.
+
