@@ -2,6 +2,8 @@
 
 import argparse
 import base64
+import sys
+import hmac
 from pathlib import Path
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
@@ -10,290 +12,299 @@ from Crypto.Hash import SHA256, SHA512
 from Crypto.Signature import pss
 from Crypto.Protocol.KDF import PBKDF2
 
-MAGIC_HEADER = b"RKY3\x01"
+VERSION = "4.0"
+
+MAGIC_HEADER = b"RKY4\x01"
 NONCE_SIZE = 16
 TAG_SIZE = 16
 PBKDF2_ITER = 200000
+SALT_SIZE = 16
+KEY_SIZE = 32
 
-class zerotrace:
 
-    # ================= AES =================
+# ================= UTIL =================
+
+def read_input(path):
+    if path == "-":
+        return sys.stdin.buffer.read()
+    return Path(path).read_bytes()
+
+
+def write_output(path, data):
+    if path == "-":
+        sys.stdout.buffer.write(data)
+    else:
+        Path(path).write_bytes(data)
+
+
+def validate_input_data(data, min_size):
+    if len(data) < min_size:
+        raise ValueError(f"Input data too small. Minimum {min_size} bytes required")
+
+
+# ================= CORE =================
+
+class ZeroTrace:
+
+    # AES ===============================
     @staticmethod
-    def aes_encrypt(input_file, output_file, password=None, save_key=False):
-        try:
-            data = Path(input_file).read_bytes()
+    def aes_encrypt(data, password=None):
+        if not data:
+            raise ValueError("Input data is empty")
 
-            if password:
-                salt = get_random_bytes(16)
-                key = PBKDF2(password, salt, dkLen=32, count=PBKDF2_ITER)
-            else:
-                salt = b""
-                key = get_random_bytes(32)
+        if password:
+            salt = get_random_bytes(SALT_SIZE)
+            key = PBKDF2(password, salt, dkLen=KEY_SIZE, count=PBKDF2_ITER, hmac_hash_module=SHA256)
+        else:
+            salt = b""
+            key = get_random_bytes(KEY_SIZE)
 
-            cipher = AES.new(key, AES.MODE_GCM)
-            ciphertext, tag = cipher.encrypt_and_digest(data)
+        nonce = get_random_bytes(NONCE_SIZE)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_SIZE)
+        ciphertext, tag = cipher.encrypt_and_digest(data)
 
-            with open(output_file, "wb") as f:
-                f.write(MAGIC_HEADER)
-                f.write(salt.ljust(16, b"\0"))
-                f.write(cipher.nonce)
-                f.write(tag)
-                f.write(ciphertext)
-
-            if not password and save_key:
-                Path(output_file + ".key").write_text(
-                    base64.b64encode(key).decode()
-                )
-
-            print("[+] AES encryption successful")
-
-        except Exception as e:
-            print("[-] AES encryption failed:", e)
+        return (
+            MAGIC_HEADER +
+            salt +
+            nonce +
+            tag +
+            ciphertext
+        ), key if not password else None
 
     @staticmethod
-    def aes_decrypt(input_file, output_file, key_b64=None, password=None):
-        try:
-            with open(input_file, "rb") as f:
-                if f.read(5) != MAGIC_HEADER:
-                    raise ValueError("Invalid file format")
+    def aes_decrypt(data, password=None, key_b64=None):
+        validate_input_data(data, len(MAGIC_HEADER) + SALT_SIZE + NONCE_SIZE + TAG_SIZE)
 
-                salt = f.read(16).rstrip(b"\0")
-                nonce = f.read(NONCE_SIZE)
-                tag = f.read(TAG_SIZE)
-                ciphertext = f.read()
+        if data[:5] != MAGIC_HEADER:
+            raise ValueError("Invalid file format: Incorrect magic header")
 
-            if password:
-                key = PBKDF2(password, salt, dkLen=32, count=PBKDF2_ITER)
-            elif key_b64:
+        pos = len(MAGIC_HEADER)
+        salt = data[pos:pos+SALT_SIZE]
+        pos += SALT_SIZE
+        nonce = data[pos:pos+NONCE_SIZE]
+        pos += NONCE_SIZE
+        tag = data[pos:pos+TAG_SIZE]
+        pos += TAG_SIZE
+        ciphertext = data[pos:]
+
+        if password:
+            key = PBKDF2(password, salt, dkLen=KEY_SIZE, count=PBKDF2_ITER, hmac_hash_module=SHA256)
+        elif key_b64:
+            try:
                 key = base64.b64decode(key_b64)
-            else:
-                raise ValueError("Provide password or key")
+                if len(key) != KEY_SIZE:
+                    raise ValueError(f"Invalid key length. Expected {KEY_SIZE} bytes")
+            except Exception as e:
+                raise ValueError(f"Invalid base64 key: {e}")
+        else:
+            raise ValueError("Provide either password or key for decryption")
 
-            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-            plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-
-            Path(output_file).write_bytes(plaintext)
-            print("[+] AES decryption successful")
-
+        try:
+            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce, mac_len=TAG_SIZE)
+            return cipher.decrypt_and_verify(ciphertext, tag)
         except ValueError as e:
-            print("[-] Decryption failed:", e)
-        except Exception as e:
-            print("[-] Unexpected error:", e)
+            raise ValueError(f"Decryption failed: {e}. Possible causes: wrong password/key or corrupted data")
 
-    # ================= RSA =================
-    @staticmethod
-    def generate_rsa(size=2048):
-        key = RSA.generate(size)
-        Path("private.pem").write_bytes(key.export_key())
-        Path("public.pem").write_bytes(key.publickey().export_key())
-        print("[+] RSA key pair generated")
-
+    # RSA ===============================
     @staticmethod
     def rsa_encrypt(message, pub_file):
+        if not message:
+            raise ValueError("Message cannot be empty")
+
+        pub_key_data = read_input(pub_file)
         try:
-            pub = RSA.import_key(Path(pub_file).read_bytes())
-            cipher = PKCS1_OAEP.new(pub, hashAlgo=SHA256)
-
-            max_len = pub.size_in_bytes() - 2 * SHA256.digest_size - 2
-            if len(message.encode()) > max_len:
-                raise ValueError("Message too long for RSA")
-
-            ciphertext = cipher.encrypt(message.encode())
-            print(base64.b64encode(ciphertext).decode())
-
+            pub = RSA.import_key(pub_key_data)
         except Exception as e:
-            print("[-] RSA encryption failed:", e)
+            raise ValueError(f"Invalid public key: {e}")
+
+        if pub.size_in_bits() < 2048:
+            raise ValueError("RSA key size too small. Minimum 2048 bits recommended")
+
+        cipher = PKCS1_OAEP.new(pub, hashAlgo=SHA256)
+        message_bytes = message.encode('utf-8')
+
+        max_msg_length = (pub.size_in_bytes() - 2 - 2 * SHA256.digest_size)
+        if len(message_bytes) > max_msg_length:
+            raise ValueError(f"Message too long for this RSA key. Max {max_msg_length} bytes")
+
+        return base64.b64encode(cipher.encrypt(message_bytes))
 
     @staticmethod
     def rsa_decrypt(ciphertext_b64, priv_file):
+        if not ciphertext_b64:
+            raise ValueError("Ciphertext cannot be empty")
+
+        priv_key_data = read_input(priv_file)
         try:
-            priv = RSA.import_key(Path(priv_file).read_bytes())
-            cipher = PKCS1_OAEP.new(priv, hashAlgo=SHA256)
-            plaintext = cipher.decrypt(base64.b64decode(ciphertext_b64))
-            print(plaintext.decode())
-
-        except Exception:
-            print("[-] RSA decryption failed")
-
-    # ================= HYBRID =================
-    @staticmethod
-    def hybrid_encrypt(input_file, output_file, pub_file):
-        try:
-            pub = RSA.import_key(Path(pub_file).read_bytes())
-            aes_key = get_random_bytes(32)
-
-            data = Path(input_file).read_bytes()
-            cipher_aes = AES.new(aes_key, AES.MODE_GCM)
-            ciphertext, tag = cipher_aes.encrypt_and_digest(data)
-
-            cipher_rsa = PKCS1_OAEP.new(pub, hashAlgo=SHA256)
-            enc_key = cipher_rsa.encrypt(aes_key)
-
-            with open(output_file, "wb") as f:
-                f.write(MAGIC_HEADER)
-                f.write(len(enc_key).to_bytes(2, "big"))
-                f.write(enc_key)
-                f.write(cipher_aes.nonce)
-                f.write(tag)
-                f.write(ciphertext)
-
-            print("[+] Hybrid encryption successful")
-
+            priv = RSA.import_key(priv_key_data)
         except Exception as e:
-            print("[-] Hybrid encryption failed:", e)
+            raise ValueError(f"Invalid private key: {e}")
 
-    @staticmethod
-    def hybrid_decrypt(input_file, output_file, priv_file):
         try:
-            priv = RSA.import_key(Path(priv_file).read_bytes())
-
-            with open(input_file, "rb") as f:
-                if f.read(5) != MAGIC_HEADER:
-                    raise ValueError("Invalid file format")
-
-                key_len = int.from_bytes(f.read(2), "big")
-                enc_key = f.read(key_len)
-                nonce = f.read(NONCE_SIZE)
-                tag = f.read(TAG_SIZE)
-                ciphertext = f.read()
-
-            cipher_rsa = PKCS1_OAEP.new(priv, hashAlgo=SHA256)
-            aes_key = cipher_rsa.decrypt(enc_key)
-
-            cipher_aes = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
-            plaintext = cipher_aes.decrypt_and_verify(ciphertext, tag)
-
-            Path(output_file).write_bytes(plaintext)
-            print("[+] Hybrid decryption successful")
-
-        except Exception:
-            print("[-] Hybrid decryption failed")
-
-    # ================= SIGNATURE =================
-    @staticmethod
-    def sign(file_path, priv_file):
-        try:
-            priv = RSA.import_key(Path(priv_file).read_bytes())
-            data = Path(file_path).read_bytes()
-
-            h = SHA256.new(data)
-            signature = pss.new(priv).sign(h)
-
-            Path(file_path + ".sig").write_bytes(signature)
-            print("[+] Signature created")
-
+            ciphertext = base64.b64decode(ciphertext_b64)
         except Exception as e:
-            print("[-] Signing failed:", e)
+            raise ValueError(f"Invalid base64 ciphertext: {e}")
+
+        cipher = PKCS1_OAEP.new(priv, hashAlgo=SHA256)
+        try:
+            return cipher.decrypt(ciphertext)
+        except ValueError as e:
+            raise ValueError(f"RSA decryption failed: {e}. Possibly wrong key or corrupted data")
+
+    # SIGN ===============================
+    @staticmethod
+    def sign(data, priv_file):
+        if not data:
+            raise ValueError("Data to sign cannot be empty")
+
+        priv_key_data = read_input(priv_file)
+        try:
+            priv = RSA.import_key(priv_key_data)
+        except Exception as e:
+            raise ValueError(f"Invalid private key: {e}")
+
+        if priv.size_in_bits() < 2048:
+            raise ValueError("RSA key size too small. Minimum 2048 bits recommended")
+
+        h = SHA256.new(data)
+        return pss.new(priv).sign(h)
 
     @staticmethod
-    def verify(file_path, sig_file, pub_file):
-        try:
-            pub = RSA.import_key(Path(pub_file).read_bytes())
-            data = Path(file_path).read_bytes()
-            signature = Path(sig_file).read_bytes()
+    def verify(data, signature, pub_file):
+        if not data or not signature:
+            raise ValueError("Data and signature cannot be empty")
 
-            h = SHA256.new(data)
+        pub_key_data = read_input(pub_file)
+        try:
+            pub = RSA.import_key(pub_key_data)
+        except Exception as e:
+            raise ValueError(f"Invalid public key: {e}")
+
+        h = SHA256.new(data)
+        try:
             pss.new(pub).verify(h, signature)
-
-            print("[+] Signature VALID")
-
-        except Exception:
-            print("[-] Signature INVALID")
-
-    # ================= HASH =================
-    @staticmethod
-    def hash_file(file_path, algo):
-        data = Path(file_path).read_bytes()
-
-        if algo == "sha256":
-            h = SHA256.new(data)
-        else:
-            h = SHA512.new(data)
-
-        print(h.hexdigest())
+            return True
+        except (ValueError, TypeError) as e:
+            return False
 
 
 # ================= CLI =================
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="zerotrace",
+        description="ZeroTrace v4 - Hardened Unix-style Cryptographic Toolkit",
+
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}"
+    )
+
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    # AES
+    aes = sub.add_parser("aes", help="AES-GCM operations")
+    aes_sub = aes.add_subparsers(dest="action", required=True)
+
+    aes_enc = aes_sub.add_parser("encrypt", help="Encrypt data")
+    aes_enc.add_argument("-i", "--input", default="-", help="Input file (default: stdin)")
+    aes_enc.add_argument("-o", "--output", default="-", help="Output file (default: stdout)")
+    aes_enc.add_argument("--password", help="Password for encryption")
+    aes_enc.add_argument("--save-key", action="store_true", help="Save generated key to stderr")
+
+    aes_dec = aes_sub.add_parser("decrypt", help="Decrypt data")
+    aes_dec.add_argument("-i", "--input", default="-", help="Input file (default: stdin)")
+    aes_dec.add_argument("-o", "--output", default="-", help="Output file (default: stdout)")
+    aes_dec.add_argument("--password", help="Password for decryption")
+    aes_dec.add_argument("--key", help="Base64 encoded key for decryption")
+
+    # RSA
+    rsa = sub.add_parser("rsa", help="RSA operations")
+    rsa_sub = rsa.add_subparsers(dest="action", required=True)
+
+    rsa_enc = rsa_sub.add_parser("encrypt")
+    rsa_enc.add_argument("-m", "--message", required=True, help="Message to encrypt")
+    rsa_enc.add_argument("--pub", required=True, help="Public key file")
+
+    rsa_dec = rsa_sub.add_parser("decrypt")
+    rsa_dec.add_argument("-c", "--ciphertext", required=True, help="Base64 ciphertext")
+    rsa_dec.add_argument("--priv", required=True, help="Private key file")
+
+    # SIGN
+    sign = sub.add_parser("sign", help="Digital signature operations")
+    sign_sub = sign.add_subparsers(dest="action", required=True)
+
+    sign_create = sign_sub.add_parser("create")
+    sign_create.add_argument("-i", "--input", default="-", help="Input file (default: stdin)")
+    sign_create.add_argument("--priv", required=True, help="Private key file")
+
+    sign_verify = sign_sub.add_parser("verify")
+    sign_verify.add_argument("-i", "--input", default="-", help="Input file (default: stdin)")
+    sign_verify.add_argument("--sig", required=True, help="Signature file")
+    sign_verify.add_argument("--pub", required=True, help="Public key file")
+
+    return parser
+
+
 def main():
-    parser = argparse.ArgumentParser(description="ZeroTrace v3 - Hardened Crypto Toolkit - Rakka06Evandra")
-    sub = parser.add_subparsers(dest="cmd")
+    try:
+        parser = build_parser()
+        args = parser.parse_args()
 
-    sub.add_parser("genrsa")
+        if args.command == "aes":
 
-    aes = sub.add_parser("aes")
-    aes.add_argument("--encrypt")
-    aes.add_argument("--decrypt")
-    aes.add_argument("--out")
-    aes.add_argument("--key")
-    aes.add_argument("--password")
-    aes.add_argument("--save-key", action="store_true")
+            if args.action == "encrypt":
+                data = read_input(args.input)
+                result, key = ZeroTrace.aes_encrypt(data, args.password)
+                write_output(args.output, result)
 
-    rsa = sub.add_parser("rsa")
-    rsa.add_argument("--encrypt")
-    rsa.add_argument("--decrypt")
-    rsa.add_argument("--pub")
-    rsa.add_argument("--priv")
+                if key and args.save_key:
+                    print(f"\n[KEY] {base64.b64encode(key).decode()}", file=sys.stderr)
 
-    hybrid = sub.add_parser("hybrid")
-    hybrid.add_argument("--encrypt")
-    hybrid.add_argument("--decrypt")
-    hybrid.add_argument("--out")
-    hybrid.add_argument("--pub")
-    hybrid.add_argument("--priv")
+            elif args.action == "decrypt":
+                data = read_input(args.input)
+                result = ZeroTrace.aes_decrypt(data, args.password, args.key)
+                write_output(args.output, result)
 
-    sign = sub.add_parser("sign")
-    sign.add_argument("--file")
-    sign.add_argument("--verify")
-    sign.add_argument("--sig")
-    sign.add_argument("--pub")
-    sign.add_argument("--priv")
+        elif args.command == "rsa":
 
-    h = sub.add_parser("hash")
-    h.add_argument("--file")
-    h.add_argument("--algo", choices=["sha256", "sha512"], required=True)
+            if args.action == "encrypt":
+                result = ZeroTrace.rsa_encrypt(args.message, args.pub)
+                sys.stdout.buffer.write(result + b'\n')
 
-    args = parser.parse_args()
+            elif args.action == "decrypt":
+                result = ZeroTrace.rsa_decrypt(args.ciphertext, args.priv)
+                sys.stdout.buffer.write(result)
 
-    if args.cmd == "genrsa":
-        zerotrace.generate_rsa()
+        elif args.command == "sign":
 
-    elif args.cmd == "aes":
-        if args.encrypt and args.out:
-            zerotrace.aes_encrypt(args.encrypt, args.out, args.password, args.save_key)
-        elif args.decrypt and args.out:
-            zerotrace.aes_decrypt(args.decrypt, args.out, args.key, args.password)
+            if args.action == "create":
+                data = read_input(args.input)
+                sig = ZeroTrace.sign(data, args.priv)
+                sys.stdout.buffer.write(sig)
+
+            elif args.action == "verify":
+                data = read_input(args.input)
+                signature = read_input(args.sig)
+                if ZeroTrace.verify(data, signature, args.pub):
+                    print("VALID")
+                else:
+                    print("INVALID")
+                    sys.exit(1)
+
         else:
-            print("[-] AES requires --encrypt/--decrypt and --out")
+            parser.print_help()
 
-    elif args.cmd == "rsa":
-        if args.encrypt and args.pub:
-            zerotrace.rsa_encrypt(args.encrypt, args.pub)
-        elif args.decrypt and args.priv:
-            zerotrace.rsa_decrypt(args.decrypt, args.priv)
-        else:
-            print("[-] RSA requires proper parameters")
-
-    elif args.cmd == "hybrid":
-        if args.encrypt and args.out and args.pub:
-            zerotrace.hybrid_encrypt(args.encrypt, args.out, args.pub)
-        elif args.decrypt and args.out and args.priv:
-            zerotrace.hybrid_decrypt(args.decrypt, args.out, args.priv)
-        else:
-            print("[-] Hybrid requires proper parameters")
-
-    elif args.cmd == "sign":
-        if args.file and args.priv:
-            zerotrace.sign(args.file, args.priv)
-        elif args.verify and args.sig and args.pub:
-            zerotrace.verify(args.verify, args.sig, args.pub)
-        else:
-            print("[-] Sign/Verify parameters invalid")
-
-    elif args.cmd == "hash":
-        zerotrace.hash_file(args.file, args.algo)
-
-    else:
-        parser.print_help()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
