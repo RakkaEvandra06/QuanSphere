@@ -1,6 +1,6 @@
 <svg width="1200" height="300" xmlns="http://www.w3.org/2000/svg">
 
-  <defs>
+<defs>
     <!-- Animated Gradient -->
     <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#0f2027">
@@ -10,14 +10,14 @@
     </linearGradient>
 
     <!-- Glow Effect -->
-    <filter id="glow">
+  <filter id="glow">
       <feGaussianBlur stdDeviation="4" result="coloredBlur"></feGaussianBlur>
       <feMerge>
         <feMergeNode in="coloredBlur"></feMergeNode>
         <feMergeNode in="SourceGraphic"></feMergeNode>
       </feMerge>
-    </filter>
-  </defs>
+  </filter>
+</defs>
 
   <!-- Background -->
   <rect width="1200" height="300" fill="url(#bgGradient)"></rect>
