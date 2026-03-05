@@ -1,0 +1,40 @@
+<svg width="1200" height="300" xmlns="http://www.w3.org/2000/svg">
+
+  <defs>
+    <!-- Animated Gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f2027">
+        <animate attributeName="stop-color" values="#0f2027;#203a43;#2c5364;#0f2027" dur="8s" repeatCount="indefinite"></animate>
+      </stop>
+      <stop offset="100%" stop-color="#2c5364"></stop>
+    </linearGradient>
+
+    <!-- Glow Effect -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"></feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="coloredBlur"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="300" fill="url(#bgGradient)"></rect>
+
+  <!-- Animated Scan Line -->
+  <rect x="0" y="0" width="1200" height="5" fill="#00ffd5" opacity="0.6">
+    <animate attributeName="y" from="0" to="300" dur="4s" repeatCount="indefinite"></animate>
+  </rect>
+
+  <!-- Title -->
+  <text x="50%" y="45%" font-size="60" text-anchor="middle" fill="white" font-family="Arial" font-weight="bold" filter="url(#glow)">
+    ZeroTrace v4
+  </text>
+
+  <!-- Subtitle -->
+  <text x="50%" y="65%" font-size="24" text-anchor="middle" fill="#00ffd5" font-family="Arial">
+    Hybrid Encryption • Secure File Protection • Enterprise CLI Security Tool
+  </text>
+
+</svg>
