@@ -1,9 +1,15 @@
-<img width="1140" height="228" alt="ascii-art-text (quansphere)" src="https://github.com/user-attachments/assets/b42c567e-7500-45fe-a900-449d2e8fff56" />
+<p align="center">
+  <img src="assets/animated-zerotracer-v4.svg" width="100%" alt="ZeroTracer Banner"/>
+</p>
+
+<div align="center">
 
 ![Security Rating](https://img.shields.io/badge/Security%20Rating-A%2B-brightgreen)
 ![Encryption](https://img.shields.io/badge/Encryption-AES--256%20%7C%20RSA--4096-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License](https://img.shields.io/github/license/RakkaEvandra06/QuanSphere)
+
+</div>
 
 ---
 
@@ -18,6 +24,7 @@ It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), a
 
 ```bash
 │
+├── assets
 ├── .gitignore
 ├── README.md
 ├── requirements.txt
@@ -155,3 +162,7 @@ python zerotracer.py hash --file file.txt --algo sha512
 ## ⚠️ Disclaimer
 
 This toolkit is developed for educational and research purposes.
+
+<p align="center">
+  <img src="assets/quansphere-ascii-art-text.png" width="100%" />
+</p>
