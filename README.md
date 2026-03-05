@@ -147,6 +147,7 @@ python zerotracer.py sign --verify file.txt --sig file.txt.sig --pub public.pem
 ```
 
 🧮 Hashing
+
 SHA-256
 ```bash
 python zerotracer.py hash --file file.txt --algo sha256
