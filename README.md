@@ -37,7 +37,6 @@
   </text>
 
 </svg>
-![download](https://github.com/user-attachments/assets/6a6ce4dd-667d-468e-b540-c669e4dddcfd)
 
 ![Security Rating](https://img.shields.io/badge/Security%20Rating-A%2B-brightgreen)
 ![Encryption](https://img.shields.io/badge/Encryption-AES--256%20%7C%20RSA--4096-blue)
