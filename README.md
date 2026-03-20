@@ -13,36 +13,9 @@
 
 ---
 
-# 🔐 ZeroTracer v4 - Hardened Crypto Toolkit
+# 🔐 Hardened Crypto Toolkit
 
-ZeroTrace v4 is a hardened cryptography toolkit engineered for secure data encryption built in Python.  
-It supports AES-GCM, RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS), and SHA hashing with enhanced security validation..
-
----
-
-## 📦 Repository Structure
-
-```bash
-│
-├── assets
-├── .gitignore
-├── README.md
-├── requirements.txt
-└── zerotracer.py
-```
-
----
-
-## ✨ Features
-
-The project demonstrates practical implementation of modern cryptographic standards including:
-- AES-256 GCM file encryption/decryption
-- RSA-2048 key generation
-- RSA-OAEP encryption/decryption
-- Hybrid encryption (RSA + AES)
-- Digital signature (RSA-PSS)
-- SHA256 & SHA512 hashing
-- Secure PBKDF2 key derivation
+ZeroTrace v4 is a hardened cryptography toolkit engineered for secure data encryption built in Python. It supports AES-GCM, KDF (Argon2id, PBKDF2-HMAC), RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS, Ed25519), and SHA hashing with enhanced security validation.
 
 ---
 
@@ -51,111 +24,231 @@ The project demonstrates practical implementation of modern cryptographic standa
 ```bash
 git clone https://github.com/RakkaEvandra06/QuanSphere.git
 cd QuanSphere
-pip install -r requirements.txt
-python3 zerotrace.py --help
+
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# Install with all dependencies
+pip install -e ".[dev]"
 ```
 
-## 🎯 Install the required package
+### Verify installation
 
-Install pycryptodome for the Version Windows or Linux you're running:
-if you're on Windows:
 ```bash
-python pip install pycryptodome
-```
-
-If you're on Linux:
-```bash
-sudo apt install python3-pycryptodome
-```
-
-## 🧪 Test Installation
-
-After installing, test:
-```bash
-python3 -c "from Crypto.Cipher import AES; print('OK')"
-```
-Output:
-If it prints OK, you're good.
-
-## 🚨 If it STILL fails
-
-Quick One-Command Version
-```bash
-sudo apt install python3-venv -y
-python3 -m venv venv
-source venv/bin/activate
-pip install pycryptodome
-python zerotracer.py
+crypto-toolkit version
 ```
 
 ---
 
 ## 🚀 Usage
 
-🔑 Generate RSA Key Pair
+### Symmetric Encryption
+
 ```bash
-python zerotracer.py genrsa
+# Generate a 256-bit key
+crypto-toolkit generate-key --type symmetric
+# → outputs hex key
+
+# Encrypt with key
+crypto-toolkit encrypt "my secret message" --key <hex-key>
+
+# Decrypt
+crypto-toolkit decrypt <token> --key <hex-key>
+
+# Encrypt with password (Argon2id key derivation)
+crypto-toolkit encrypt "my secret" --password "strongpassword"
+
+# Decrypt with password
+crypto-toolkit decrypt <token> --password "strongpassword"
+
+# Use ChaCha20-Poly1305 instead of AES-GCM
+crypto-toolkit encrypt "data" --key <hex-key> --algo chacha20
+
+# Interactive password prompt (avoids shell history)
+crypto-toolkit encrypt "data" --prompt-password
 ```
 
-🔐 AES Encryption
-Encrypt using password-based key derivation:
+### Hashing
+
 ```bash
-python zerotracer.py aes --encrypt file.txt --out file.enc --password StrongPassword123
+# Hash a string (SHA-256 by default)
+crypto-toolkit hash "hello world"
+
+# Hash with SHA-512
+crypto-toolkit hash "hello world" --algo sha512
+
+# Hash a file
+crypto-toolkit hash --file /path/to/file.pdf
+
+# Supported algorithms: sha256, sha512, sha3_256, sha3_512, blake2b
+crypto-toolkit hash "data" --algo blake2b
+
+# Hash stdin
+echo -n "pipe this" | crypto-toolkit hash
 ```
 
-Encrypt using randomly generated key:
+### Key Generation
+
 ```bash
-python zerotracer.py aes --encrypt file.txt --out file.enc --save-key
+# Symmetric AES-256 key (hex)
+crypto-toolkit generate-key --type symmetric
+
+# Ed25519 signing keypair
+crypto-toolkit generate-key --type ed25519
+
+# ECC P-256 keypair (for hybrid encryption)
+crypto-toolkit generate-key --type ecc
+
+# RSA-4096 keypair
+crypto-toolkit generate-key --type rsa
+
+# Save keypair to directory
+crypto-toolkit generate-key --type ed25519 --out ./keys/
+
+# Encrypt private key with passphrase
+crypto-toolkit generate-key --type rsa --out ./keys/ --key-password "keypass"
+
+# Secure URL-safe token
+crypto-toolkit generate-key --type token
+
+# Secure password
+crypto-toolkit generate-key --type password
 ```
 
-🔓 AES Decryption
+### Digital Signatures
+
 ```bash
-python zerotracer.py aes --decrypt file.enc --out file.txt --password StrongPassword123
+# Generate Ed25519 keypair
+crypto-toolkit generate-key --type ed25519 --out ./keys/
+
+# Sign data
+crypto-toolkit sign "important document content" --key ./keys/ed25519_private.pem
+# → outputs base64 signature
+
+# Verify signature
+crypto-toolkit verify "important document content" \
+  --sig <base64-signature> \
+  --key ./keys/ed25519_public.pem
+# → ✓ Signature is VALID  (exit 0)
+# → ✗ Signature is INVALID (exit 1)
 ```
 
-🔐 RSA Encryption (Short Message)
+### File Encryption
+
 ```bash
-python zerotracer.py rsa --encrypt "Sensitive Message" --pub public.pem
+# Generate a key
+crypto-toolkit generate-key --type symmetric
+# → e.g. a1b2c3...
+
+# Encrypt a file (any size — uses 64 KiB chunks)
+crypto-toolkit encrypt-file secret.pdf secret.pdf.enc --key <hex-key>
+
+# Decrypt
+crypto-toolkit decrypt-file secret.pdf.enc recovered.pdf --key <hex-key>
+
+# Use password-derived key
+crypto-toolkit encrypt-file data.zip data.zip.enc --password "vaultpassword"
+# NOTE: save the displayed KDF salt for decryption!
+
+crypto-toolkit decrypt-file data.zip.enc data.zip --password "vaultpassword"
+
+# Interactive prompt (recommended)
+crypto-toolkit encrypt-file sensitive.db sensitive.db.enc --prompt-password
 ```
 
-🔓 RSA Decryption
+### Key Derivation
+
 ```bash
-python zerotracer.py rsa --decrypt <base64_ciphertext> --priv private.pem
+# Derive a key with Argon2id (default)
+crypto-toolkit derive-key --password "mypassword"
+# → Derived Key (hex) + Salt (hex, save this!)
+
+# Re-derive the same key using stored salt
+crypto-toolkit derive-key --password "mypassword" --salt <hex-salt>
+
+# Use PBKDF2-HMAC-SHA256 instead
+crypto-toolkit derive-key --password "mypassword" --pbkdf2
+
+# Interactive prompt
+crypto-toolkit derive-key --prompt-password
 ```
 
-🔐 Hybrid Encryption (Recommended for Files)
+### Secure Random Generation
 
-Encrypt:
 ```bash
-python zerotracer.py hybrid --encrypt document.pdf --out document.qhy --pub public.pem
+# URL-safe random token (default, 32 bytes entropy)
+crypto-toolkit random
+
+# Hex-encoded random bytes
+crypto-toolkit random --kind hex --bytes 64
+
+# Base64-encoded random bytes
+crypto-toolkit random --kind base64 --bytes 32
+
+# Random password (20 chars, includes symbols/digits/uppercase)
+crypto-toolkit random --kind password --length 24
 ```
 
-Decrypt:
+---
+
+## Project Structure
+
 ```bash
-python zerotracer.py hybrid --decrypt document.qhy --out document.pdf --priv private.pem
+hardened-crypto-toolkit/
+├── crypto_toolkit/
+│   ├── __init__.py
+│   ├── core/                    
+│   │   ├── __init__.py
+│   │   ├── constants.py         
+│   │   ├── exceptions.py        
+│   │   ├── symmetric.py         
+│   │   ├── asymmetric.py        
+│   │   ├── hashing.py           
+│   │   ├── kdf.py               
+│   │   ├── signatures.py        
+│   │   ├── file_crypto.py       
+│   │   ├── pbe.py               
+│   │   └── random_gen.py        
+│   └── cli/
+│       ├── __init__.py
+│       ├── main.py              
+│       └── output.py            
+├── tests/
+│   ├── unit/                    
+│   │   ├── test_symmetric.py
+│   │   ├── test_asymmetric.py
+│   │   ├── test_hashing.py
+│   │   ├── test_kdf.py
+│   │   ├── test_signatures.py
+│   │   ├── test_file_crypto.py
+│   │   ├── test_random_gen.py
+│   │   └── test_pbe.py
+│   └── integration/             
+│       └── test_cli.py
+├── pyproject.toml
+└── README.md
 ```
 
-✍ Digital Signature
-Sign a file:
-```bash
-python zerotracer.py sign --file file.txt --priv private.pem
-```
+---
 
-Verify signature:
-```bash
-python zerotracer.py sign --verify file.txt --sig file.txt.sig --pub public.pem
-```
+## Development
 
-🧮 Hashing
-
-SHA-256
 ```bash
-python zerotracer.py hash --file file.txt --algo sha256
-```
+# Run tests
+pytest
 
-SHA-512
-```bash
-python zerotracer.py hash --file file.txt --algo sha512
+# Run with coverage
+pytest --cov=crypto_toolkit
+
+# Lint
+ruff check .
+
+# Format
+black .
+
+# Type check
+mypy crypto_toolkit/
 ```
 
 ---
