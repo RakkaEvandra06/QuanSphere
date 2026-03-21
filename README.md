@@ -19,6 +19,49 @@ ZeroTrace v4 is a hardened cryptography toolkit engineered for secure data encry
 
 ---
 
+## 🏗️ Architecture
+
+```bash
+QuanSphere/
+├── assets/
+├── crypto_toolkit/
+│   ├── cli/
+│   │   ├── __init__.py
+│   │   ├── main.py              
+│   │   └── output.py     
+│   └── core/                    
+│      ├── asymmetric.py         
+│      ├── constants.py        
+│      ├── exception.py         
+│      ├── file_crypto.py        
+│      ├── hashing.py           
+│      ├── kdf.py               
+│      ├── pbe.py        
+│      ├── random_gen.py       
+│      ├── signatures.py               
+│      └── symmetric.py               
+├── tests/
+│   ├── integration/           
+│   │   ├── __init__.py
+│   │   └── test_cli.py
+│   └── unit/                    
+│       ├── test_asymmetric.py
+│       ├── test_file_crypto.py
+│       ├── test_hashing.py
+│       ├── test_kdf.py
+│       ├── test_pbe.py
+│       ├── test_random_gen.py
+│       ├── test_random_gen.py
+│       ├── test_signatures.py
+│       ├── test_symmetric.py
+│       ├── __init__.py
+│       └── conftest.py
+├── pyproject.toml
+└── README.md
+```
+
+---
+
 ## ⚙️ Installation
 
 ```bash
@@ -27,13 +70,13 @@ cd QuanSphere
 
 # Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 # Install with all dependencies
 pip install -e ".[dev]"
 ```
 
-### Verify installation
+### ✅ Verify installation
 
 ```bash
 crypto-toolkit version
@@ -188,46 +231,6 @@ crypto-toolkit random --kind base64 --bytes 32
 
 # Random password (20 chars, includes symbols/digits/uppercase)
 crypto-toolkit random --kind password --length 24
-```
-
----
-
-## Project Structure
-
-```bash
-hardened-crypto-toolkit/
-├── crypto_toolkit/
-│   ├── __init__.py
-│   ├── core/                    
-│   │   ├── __init__.py
-│   │   ├── constants.py         
-│   │   ├── exceptions.py        
-│   │   ├── symmetric.py         
-│   │   ├── asymmetric.py        
-│   │   ├── hashing.py           
-│   │   ├── kdf.py               
-│   │   ├── signatures.py        
-│   │   ├── file_crypto.py       
-│   │   ├── pbe.py               
-│   │   └── random_gen.py        
-│   └── cli/
-│       ├── __init__.py
-│       ├── main.py              
-│       └── output.py            
-├── tests/
-│   ├── unit/                    
-│   │   ├── test_symmetric.py
-│   │   ├── test_asymmetric.py
-│   │   ├── test_hashing.py
-│   │   ├── test_kdf.py
-│   │   ├── test_signatures.py
-│   │   ├── test_file_crypto.py
-│   │   ├── test_random_gen.py
-│   │   └── test_pbe.py
-│   └── integration/             
-│       └── test_cli.py
-├── pyproject.toml
-└── README.md
 ```
 
 ---
