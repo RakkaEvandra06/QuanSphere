@@ -51,7 +51,6 @@ QuanSphere/
 │       ├── test_kdf.py
 │       ├── test_pbe.py
 │       ├── test_random_gen.py
-│       ├── test_random_gen.py
 │       ├── test_signatures.py
 │       ├── test_symmetric.py
 │       ├── __init__.py
