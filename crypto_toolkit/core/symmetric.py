@@ -1,13 +1,3 @@
-"""Symmetric encryption using AES-256-GCM and ChaCha20-Poly1305.
-
-Both algorithms provide *authenticated* encryption, meaning the ciphertext
-integrity is verified on decryption.  Tampering or corruption raises
-``DecryptionError`` rather than producing garbage plaintext.
-
-Envelope format (base64-decoded):
-    MAGIC (7 bytes) | VERSION (1) | NONCE (12 or 16) | CIPHERTEXT+TAG
-"""
-
 import base64
 import secrets
 from typing import Literal
@@ -41,21 +31,7 @@ def encrypt(
     algorithm: Algorithm = "aes-gcm",
     associated_data: bytes | None = None,
 ) -> str:
-    """Encrypt *plaintext* with *key* and return a base64-encoded envelope.
 
-    Args:
-        plaintext: Raw bytes to encrypt.
-        key: 32-byte symmetric key.
-        algorithm: ``"aes-gcm"`` (default) or ``"chacha20"``.
-        associated_data: Optional authenticated-but-not-encrypted context.
-
-    Returns:
-        URL-safe base64 string containing the full envelope.
-
-    Raises:
-        InputValidationError: If the key length is wrong.
-        EncryptionError: If the underlying primitive fails.
-    """
     try:
         if algorithm == "aes-gcm":
             _validate_key(key, AES_KEY_SIZE)
@@ -63,6 +39,7 @@ def encrypt(
             ciphertext = AESGCM(key).encrypt(nonce, plaintext, associated_data)
         elif algorithm == "chacha20":
             _validate_key(key, CHACHA_KEY_SIZE)
+            # CHACHA_NONCE_SIZE is 12 bytes (RFC 8439 standard).
             nonce = secrets.token_bytes(CHACHA_NONCE_SIZE)
             ciphertext = ChaCha20Poly1305(key).encrypt(nonce, plaintext, associated_data)
         else:
@@ -83,19 +60,7 @@ def decrypt(
     *,
     associated_data: bytes | None = None,
 ) -> bytes:
-    """Decrypt a base64 envelope produced by :func:`encrypt`.
 
-    Args:
-        token: Base64-encoded envelope string.
-        key: 32-byte symmetric key.
-        associated_data: Must match the value used during encryption, if any.
-
-    Returns:
-        Recovered plaintext bytes.
-
-    Raises:
-        DecryptionError: On authentication failure, bad key, or malformed data.
-    """
     try:
         raw = base64.urlsafe_b64decode(token.encode())
         magic_len = len(SYMMETRIC_MAGIC)
@@ -114,6 +79,7 @@ def decrypt(
             return AESGCM(key).decrypt(nonce, ciphertext, associated_data)
         elif algo_tag == b"\x02":
             _validate_key(key, CHACHA_KEY_SIZE)
+            # CHACHA_NONCE_SIZE is 12 bytes (RFC 8439 standard).
             nonce, ciphertext = payload[:CHACHA_NONCE_SIZE], payload[CHACHA_NONCE_SIZE:]
             return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, associated_data)
         else:
