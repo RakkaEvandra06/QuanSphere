@@ -1,12 +1,3 @@
-"""Password-based key derivation functions (KDFs).
-
-Primary KDF: **Argon2id** (memory-hard, side-channel resistant).
-Fallback KDF: **PBKDF2-HMAC-SHA256** (for environments without argon2-cffi).
-
-Both functions return a ``DerivedKey`` named-tuple containing the raw key
-bytes and the salt, so callers can store the salt for later re-derivation.
-"""
-
 from __future__ import annotations
 
 import secrets
@@ -21,7 +12,6 @@ from crypto_toolkit.core.constants import (
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
-    PBKDF2_HASH,
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
@@ -31,7 +21,6 @@ from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationEr
 
 class DerivedKey(NamedTuple):
     """Container for a derived key and its associated salt."""
-
     key: bytes
     salt: bytes
 
@@ -45,23 +34,7 @@ def derive_key_argon2(
     parallelism: int = ARGON2_PARALLELISM,
     hash_len: int = ARGON2_HASH_LEN,
 ) -> DerivedKey:
-    """Derive a key from *password* using Argon2id.
 
-    Args:
-        password: User password as string or bytes.
-        salt: 16+ byte random salt.  Generated securely if ``None``.
-        time_cost: Number of Argon2 iterations.
-        memory_cost: Memory usage in KiB.
-        parallelism: Degree of parallelism.
-        hash_len: Output key length in bytes.
-
-    Returns:
-        :class:`DerivedKey` with ``.key`` and ``.salt`` attributes.
-
-    Raises:
-        KeyDerivationError: If argon2-cffi is unavailable or derivation fails.
-        InputValidationError: If parameters are below safe minimums.
-    """
     if time_cost < 1:
         raise InputValidationError("Argon2 time_cost must be ≥ 1.")
     if memory_cost < 8192:
@@ -105,24 +78,7 @@ def derive_key_pbkdf2(
     iterations: int = PBKDF2_ITERATIONS,
     key_len: int = PBKDF2_KEY_LEN,
 ) -> DerivedKey:
-    """Derive a key from *password* using PBKDF2-HMAC-SHA256.
 
-    Prefer :func:`derive_key_argon2` when available.  This function is
-    provided as a standards-compliant fallback.
-
-    Args:
-        password: User password.
-        salt: Random salt; generated if ``None``.
-        iterations: PBKDF2 iteration count (OWASP 2023: ≥ 600 000).
-        key_len: Output key length in bytes.
-
-    Returns:
-        :class:`DerivedKey`.
-
-    Raises:
-        InputValidationError: If iteration count is dangerously low.
-        KeyDerivationError: On derivation failure.
-    """
     if iterations < 100_000:
         raise InputValidationError(
             "PBKDF2 iterations must be ≥ 100 000.  "
