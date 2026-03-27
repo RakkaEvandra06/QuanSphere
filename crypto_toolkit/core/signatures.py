@@ -1,14 +1,3 @@
-"""Digital signature operations.
-
-Supported schemes
------------------
-* **Ed25519** — fast, modern, constant-time EdDSA (recommended for new systems).
-* **RSA-PSS** with SHA-256 — for interoperability with RSA infrastructure.
-
-Signatures are returned as raw bytes.  The caller is responsible for encoding
-(e.g. base64) before storage or transmission.
-"""
-
 from __future__ import annotations
 
 from cryptography.exceptions import InvalidSignature
@@ -18,21 +7,12 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 
 from crypto_toolkit.core.exceptions import KeyGenerationError, SignatureError
 
-
 # ── Ed25519 ───────────────────────────────────────────────────────────────────
-
 
 def generate_ed25519_keypair() -> (
     tuple[ed25519.Ed25519PrivateKey, ed25519.Ed25519PublicKey]
 ):
-    """Generate an Ed25519 signing key-pair.
 
-    Returns:
-        ``(private_key, public_key)`` tuple.
-
-    Raises:
-        KeyGenerationError: On unexpected failure.
-    """
     try:
         private_key = ed25519.Ed25519PrivateKey.generate()
         return private_key, private_key.public_key()
@@ -41,18 +21,7 @@ def generate_ed25519_keypair() -> (
 
 
 def sign_ed25519(data: bytes, private_key: ed25519.Ed25519PrivateKey) -> bytes:
-    """Sign *data* with an Ed25519 private key.
 
-    Args:
-        data: Arbitrary data to sign.
-        private_key: Ed25519 signing key.
-
-    Returns:
-        64-byte raw signature.
-
-    Raises:
-        SignatureError: On signing failure.
-    """
     try:
         return private_key.sign(data)
     except Exception as exc:
@@ -64,16 +33,7 @@ def verify_ed25519(
     signature: bytes,
     public_key: ed25519.Ed25519PublicKey,
 ) -> bool:
-    """Verify an Ed25519 *signature* over *data*.
 
-    Args:
-        data: Original data that was signed.
-        signature: 64-byte signature from :func:`sign_ed25519`.
-        public_key: Corresponding Ed25519 public key.
-
-    Returns:
-        ``True`` if the signature is valid; ``False`` otherwise.
-    """
     try:
         public_key.verify(signature, data)
         return True
@@ -82,9 +42,7 @@ def verify_ed25519(
     except Exception as exc:
         raise SignatureError("Ed25519 verification encountered an unexpected error.") from exc
 
-
 # ── Ed25519 key serialisation ─────────────────────────────────────────────────
-
 
 def ed25519_private_key_to_pem(
     key: ed25519.Ed25519PrivateKey,
@@ -145,23 +103,10 @@ def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
     except Exception as exc:
         raise InputValidationError("Failed to load Ed25519 public key — corrupt PEM.") from exc
 
-
 # ── RSA-PSS signatures ────────────────────────────────────────────────────────
 
-
 def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
-    """Sign *data* with RSA-PSS (SHA-256).
 
-    Args:
-        data: Data to sign.
-        private_key: RSA private key (≥ 2048 bits).
-
-    Returns:
-        Raw signature bytes.
-
-    Raises:
-        SignatureError: On failure.
-    """
     try:
         return private_key.sign(
             data,
@@ -176,16 +121,7 @@ def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
 
 
 def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> bool:
-    """Verify an RSA-PSS *signature* over *data*.
 
-    Args:
-        data: Original signed data.
-        signature: Signature bytes from :func:`sign_rsa_pss`.
-        public_key: RSA public key.
-
-    Returns:
-        ``True`` if valid; ``False`` on invalid signature.
-    """
     try:
         public_key.verify(
             signature,
