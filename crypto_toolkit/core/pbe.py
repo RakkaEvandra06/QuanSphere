@@ -1,21 +1,6 @@
-"""High-level password-based encryption (PBE) combining KDF + AES-256-GCM.
-
-This module provides the convenient PBE layer used by the CLI's
-``encrypt --password`` and ``decrypt --password`` subcommands.
-
-Envelope format (binary, then base64):
-    PBE_MAGIC   (7 bytes)
-    VERSION     (1 byte)
-    KDF_TAG     (1 byte: 0x01 = Argon2, 0x02 = PBKDF2)
-    SALT        (16 bytes)
-    NONCE       (12 bytes)
-    CIPHERTEXT  + GCM-TAG (variable)
-"""
-
 from __future__ import annotations
 
 import base64
-import struct
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -36,19 +21,7 @@ def password_encrypt(
     *,
     use_argon2: bool = True,
 ) -> str:
-    """Encrypt *plaintext* with a password-derived key.
 
-    Args:
-        plaintext: Data to encrypt.
-        password: User-supplied passphrase.
-        use_argon2: Use Argon2id (default).  Falls back to PBKDF2 if ``False``.
-
-    Returns:
-        URL-safe base64-encoded envelope.
-
-    Raises:
-        EncryptionError: On failure.
-    """
     try:
         if use_argon2:
             derived = derive_key_argon2(password)
@@ -74,18 +47,7 @@ def password_encrypt(
 
 
 def password_decrypt(token: str, password: str) -> bytes:
-    """Decrypt an envelope produced by :func:`password_encrypt`.
 
-    Args:
-        token: Base64-encoded envelope.
-        password: User passphrase.
-
-    Returns:
-        Recovered plaintext.
-
-    Raises:
-        DecryptionError: On wrong password, corruption, or authentication failure.
-    """
     try:
         raw = base64.urlsafe_b64decode(token.encode())
         magic_len = len(_PBE_MAGIC)
