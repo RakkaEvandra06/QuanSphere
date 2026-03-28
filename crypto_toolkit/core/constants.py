@@ -1,9 +1,3 @@
-"""Cryptographic constants and secure defaults.
-
-All values here represent the *minimum* accepted security level.
-They are intentionally conservative and reviewed against NIST SP 800-131A.
-"""
-
 # ── Symmetric encryption ──────────────────────────────────────────────────────
 
 AES_KEY_SIZE = 32          # AES-256 (bytes)
@@ -11,7 +5,7 @@ AES_NONCE_SIZE = 12        # GCM recommended nonce length (bytes)
 AES_TAG_SIZE = 16          # GCM authentication tag (bytes)
 
 CHACHA_KEY_SIZE = 32       # ChaCha20-Poly1305 key (bytes)
-CHACHA_NONCE_SIZE = 16     # 128-bit nonce (bytes)
+CHACHA_NONCE_SIZE = 12     # RFC 8439 standard nonce length (bytes) — was incorrectly 16
 
 # ── Asymmetric / RSA ─────────────────────────────────────────────────────────
 
