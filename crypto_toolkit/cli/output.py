@@ -1,5 +1,3 @@
-"""CLI output helpers using Rich for consistent, pretty formatting."""
-
 from __future__ import annotations
 
 from rich.console import Console
