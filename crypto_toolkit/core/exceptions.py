@@ -1,41 +1,26 @@
-"""Domain-level exceptions for the crypto toolkit.
-
-All exceptions are safe to surface to the CLI layer — they never
-embed raw key material, plaintext, or stack traces with sensitive data.
-"""
-
-
 class CryptoToolkitError(Exception):
-    """Base exception for all toolkit errors."""
-
+    pass
 
 class EncryptionError(CryptoToolkitError):
-    """Raised when an encryption operation fails."""
-
+    pass
 
 class DecryptionError(CryptoToolkitError):
-    """Raised when decryption fails (bad key, corrupted data, authentication failure)."""
-
+    pass
 
 class KeyGenerationError(CryptoToolkitError):
-    """Raised when key generation fails."""
-
+    pass
 
 class SignatureError(CryptoToolkitError):
-    """Raised when signing or verification fails."""
-
+    pass
 
 class HashingError(CryptoToolkitError):
-    """Raised when a hashing operation fails."""
-
+    pass
 
 class KeyDerivationError(CryptoToolkitError):
-    """Raised when key derivation fails."""
-
+    pass
 
 class InputValidationError(CryptoToolkitError):
-    """Raised when input parameters fail validation."""
-
+    pass
 
 class FileOperationError(CryptoToolkitError):
-    """Raised when a file read/write/encrypt/decrypt operation fails."""
+    pass
