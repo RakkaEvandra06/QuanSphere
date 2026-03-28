@@ -1,26 +1,3 @@
-"""Chunk-based file encryption using AES-256-GCM.
-
-Each chunk is independently authenticated so that truncation or partial
-corruption is detected immediately on the affected chunk, rather than only
-at the end of a large file.
-
-Encrypted file format
----------------------
-Header (fixed):
-    FILE_ENC_MAGIC  (8 bytes)
-    VERSION         (1 byte)
-    SALT            (16 bytes, random, used to derive per-file key via Argon2/PBKDF2)
-    CHUNK_SIZE      (4 bytes, big-endian uint32)
-
-Repeated chunk blocks:
-    CHUNK_LEN       (4 bytes, big-endian uint32 — length of NONCE+CIPHERTEXT+TAG)
-    NONCE           (12 bytes)
-    CIPHERTEXT+TAG  (variable)
-
-Terminator:
-    CHUNK_LEN = 0   (4-byte zero — signals end of stream)
-"""
-
 from __future__ import annotations
 
 import secrets
@@ -42,27 +19,41 @@ from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, Fil
 _HEADER_SALT_LEN = 16
 _CHUNK_LEN_FMT = ">I"   # big-endian unsigned 32-bit int
 
+# KDF tag constants embedded in the file header.
+_KDF_TAG_RAW     = b"\x00"  # raw key supplied directly
+_KDF_TAG_ARGON2  = b"\x01"  # key derived via Argon2id
+_KDF_TAG_PBKDF2  = b"\x02"  # key derived via PBKDF2
 
-def _write_header(out: BinaryIO, salt: bytes, chunk_size: int) -> None:
+
+def _write_header(
+    out: BinaryIO,
+    salt: bytes,
+    chunk_size: int,
+    kdf_tag: bytes = _KDF_TAG_RAW,
+) -> None:
     out.write(FILE_ENC_MAGIC)
     out.write(ENVELOPE_VERSION)
+    out.write(kdf_tag)
     out.write(salt)
     out.write(struct.pack(">I", chunk_size))
 
 
-def _read_header(src: BinaryIO) -> tuple[bytes, int]:
-    """Return ``(salt, chunk_size)`` parsed from the file header."""
+def _read_header(src: BinaryIO) -> tuple[bytes, bytes, int]:
+    """Return ``(kdf_tag, salt, chunk_size)`` parsed from the file header."""
     magic = src.read(len(FILE_ENC_MAGIC))
     if magic != FILE_ENC_MAGIC:
         raise DecryptionError("Not a valid encrypted file (bad magic bytes).")
     version = src.read(1)
     if version != ENVELOPE_VERSION:
         raise DecryptionError(f"Unsupported file format version: {version!r}.")
+    kdf_tag = src.read(1)
+    if kdf_tag not in (_KDF_TAG_RAW, _KDF_TAG_ARGON2, _KDF_TAG_PBKDF2):
+        raise DecryptionError(f"Unknown KDF tag in file header: {kdf_tag!r}.")
     salt = src.read(_HEADER_SALT_LEN)
     if len(salt) != _HEADER_SALT_LEN:
         raise DecryptionError("Truncated file header (salt).")
     (chunk_size,) = struct.unpack(">I", src.read(4))
-    return salt, chunk_size
+    return kdf_tag, salt, chunk_size
 
 
 def encrypt_file(
@@ -72,34 +63,60 @@ def encrypt_file(
     *,
     chunk_size: int = FILE_CHUNK_SIZE,
 ) -> None:
-    """Encrypt *src_path* → *dst_path* using chunked AES-256-GCM.
 
-    Args:
-        src_path: Path to plaintext file.
-        dst_path: Destination path for the encrypted output.
-        key: 32-byte AES key.  Derive from a password with :mod:`crypto_toolkit.core.kdf`.
-        chunk_size: Plaintext bytes per chunk (default 64 KiB).
-
-    Raises:
-        EncryptionError: On key-length mismatch or cryptographic failure.
-        FileOperationError: On I/O failure.
-    """
     if len(key) != AES_KEY_SIZE:
         raise EncryptionError(f"Key must be {AES_KEY_SIZE} bytes; got {len(key)}.")
     if not src_path.is_file():
         raise FileOperationError(f"Source file not found: {src_path}")
 
     aesgcm = AESGCM(key)
-    salt = secrets.token_bytes(_HEADER_SALT_LEN)  # stored for future key-derivation reference
+    # Zero-filled salt signals that the caller supplied a raw key.
+    salt = b"\x00" * _HEADER_SALT_LEN
 
+    _encrypt_stream(src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW)
+
+
+def encrypt_file_with_password(
+    src_path: Path,
+    dst_path: Path,
+    password: str,
+    *,
+    chunk_size: int = FILE_CHUNK_SIZE,
+    use_argon2: bool = True,
+) -> None:
+
+    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
+
+    if not src_path.is_file():
+        raise FileOperationError(f"Source file not found: {src_path}")
+
+    if use_argon2:
+        derived = derive_key_argon2(password)
+        kdf_tag = _KDF_TAG_ARGON2
+    else:
+        derived = derive_key_pbkdf2(password)
+        kdf_tag = _KDF_TAG_PBKDF2
+
+    aesgcm = AESGCM(derived.key)
+    _encrypt_stream(src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag)
+
+
+def _encrypt_stream(
+    src_path: Path,
+    dst_path: Path,
+    aesgcm: AESGCM,
+    salt: bytes,
+    chunk_size: int,
+    kdf_tag: bytes,
+) -> None:
+    """Internal: write encrypted chunks from *src_path* to *dst_path*."""
     try:
         with src_path.open("rb") as src, dst_path.open("wb") as dst:
-            _write_header(dst, salt, chunk_size)
+            _write_header(dst, salt, chunk_size, kdf_tag)
             chunk_index = 0
             while True:
                 chunk = src.read(chunk_size)
                 if not chunk:
-                    # Write zero-length terminator
                     dst.write(struct.pack(_CHUNK_LEN_FMT, 0))
                     break
                 nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -121,17 +138,7 @@ def decrypt_file(
     dst_path: Path,
     key: bytes,
 ) -> None:
-    """Decrypt an encrypted file produced by :func:`encrypt_file`.
 
-    Args:
-        src_path: Path to the encrypted file.
-        dst_path: Destination path for the decrypted output.
-        key: 32-byte AES key (must match the key used during encryption).
-
-    Raises:
-        DecryptionError: On authentication failure, bad key, or corrupted data.
-        FileOperationError: On I/O failure.
-    """
     if len(key) != AES_KEY_SIZE:
         raise DecryptionError(f"Key must be {AES_KEY_SIZE} bytes; got {len(key)}.")
     if not src_path.is_file():
@@ -141,25 +148,83 @@ def decrypt_file(
 
     try:
         with src_path.open("rb") as src, dst_path.open("wb") as dst:
-            _salt, _chunk_size = _read_header(src)
-            chunk_index = 0
-            while True:
-                len_bytes = src.read(4)
-                if len(len_bytes) < 4:
-                    raise DecryptionError("Unexpected end of file (missing chunk length).")
-                (block_len,) = struct.unpack(_CHUNK_LEN_FMT, len_bytes)
-                if block_len == 0:
-                    break  # clean EOF
-                block = src.read(block_len)
-                if len(block) != block_len:
-                    raise DecryptionError("Truncated chunk — file may be corrupted.")
-                nonce = block[:AES_NONCE_SIZE]
-                ciphertext = block[AES_NONCE_SIZE:]
-                aad = struct.pack(">Q", chunk_index)
-                plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
-                dst.write(plaintext)
-                chunk_index += 1
+            kdf_tag, _salt, _chunk_size = _read_header(src)
+            if kdf_tag != _KDF_TAG_RAW:
+                raise DecryptionError(
+                    "File was encrypted with a password — use decrypt_file_with_password()."
+                )
+            _decrypt_stream(src, dst)
     except (DecryptionError, FileOperationError):
         raise
     except Exception as exc:
         raise DecryptionError(f"File decryption failed — wrong key or corrupted data: {exc}") from exc
+
+
+def decrypt_file_with_password(
+    src_path: Path,
+    dst_path: Path,
+    password: str,
+) -> None:
+
+    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
+
+    if not src_path.is_file():
+        raise FileOperationError(f"Encrypted file not found: {src_path}")
+
+    try:
+        with src_path.open("rb") as src, dst_path.open("wb") as dst:
+            kdf_tag, salt, _chunk_size = _read_header(src)
+
+            if kdf_tag == _KDF_TAG_RAW:
+                raise DecryptionError(
+                    "File was encrypted with a raw key — use decrypt_file() instead."
+                )
+            elif kdf_tag == _KDF_TAG_ARGON2:
+                derived = derive_key_argon2(password, salt=salt)
+            elif kdf_tag == _KDF_TAG_PBKDF2:
+                derived = derive_key_pbkdf2(password, salt=salt)
+            else:
+                raise DecryptionError(f"Unknown KDF tag: {kdf_tag!r}.")
+
+            # Re-initialise AESGCM with the recovered key, then decrypt chunks.
+            aesgcm_local = AESGCM(derived.key)
+            _decrypt_stream_with_cipher(src, dst, aesgcm_local)
+    except (DecryptionError, FileOperationError):
+        raise
+    except Exception as exc:
+        raise DecryptionError(f"File decryption failed — wrong password or corrupted data: {exc}") from exc
+
+
+def _decrypt_stream(src: BinaryIO, dst: BinaryIO) -> None:
+    """Internal: decrypt chunks from *src* into *dst* — cipher already set up by caller."""
+    # This variant is used when the AESGCM object is constructed before opening the file.
+    # We re-read chunk_size from the already-consumed header, so state is in the stream.
+    _decrypt_chunks(src, dst, None)
+
+
+def _decrypt_stream_with_cipher(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM) -> None:
+    """Internal: decrypt chunks using a pre-built *aesgcm* object."""
+    _decrypt_chunks(src, dst, aesgcm)
+
+
+def _decrypt_chunks(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM | None) -> None:
+    """Read and decrypt chunk blocks from *src* (header already consumed)."""
+    chunk_index = 0
+    while True:
+        len_bytes = src.read(4)
+        if len(len_bytes) < 4:
+            raise DecryptionError("Unexpected end of file (missing chunk length).")
+        (block_len,) = struct.unpack(_CHUNK_LEN_FMT, len_bytes)
+        if block_len == 0:
+            break  # clean EOF terminator
+        block = src.read(block_len)
+        if len(block) != block_len:
+            raise DecryptionError("Truncated chunk — file may be corrupted.")
+        nonce = block[:AES_NONCE_SIZE]
+        ciphertext = block[AES_NONCE_SIZE:]
+        aad = struct.pack(">Q", chunk_index)
+        if aesgcm is None:
+            raise DecryptionError("Internal error: AESGCM cipher not initialised.")
+        plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
+        dst.write(plaintext)
+        chunk_index += 1
