@@ -55,7 +55,6 @@ def _read_header(src: BinaryIO) -> tuple[bytes, bytes, int]:
     (chunk_size,) = struct.unpack(">I", src.read(4))
     return kdf_tag, salt, chunk_size
 
-
 def encrypt_file(
     src_path: Path,
     dst_path: Path,
@@ -63,7 +62,6 @@ def encrypt_file(
     *,
     chunk_size: int = FILE_CHUNK_SIZE,
 ) -> None:
-
     if len(key) != AES_KEY_SIZE:
         raise EncryptionError(f"Key must be {AES_KEY_SIZE} bytes; got {len(key)}.")
     if not src_path.is_file():
@@ -75,7 +73,6 @@ def encrypt_file(
 
     _encrypt_stream(src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW)
 
-
 def encrypt_file_with_password(
     src_path: Path,
     dst_path: Path,
@@ -84,7 +81,6 @@ def encrypt_file_with_password(
     chunk_size: int = FILE_CHUNK_SIZE,
     use_argon2: bool = True,
 ) -> None:
-
     from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
 
     if not src_path.is_file():
@@ -132,13 +128,11 @@ def _encrypt_stream(
     except Exception as exc:
         raise FileOperationError(f"File encryption failed: {exc}") from exc
 
-
 def decrypt_file(
     src_path: Path,
     dst_path: Path,
     key: bytes,
 ) -> None:
-
     if len(key) != AES_KEY_SIZE:
         raise DecryptionError(f"Key must be {AES_KEY_SIZE} bytes; got {len(key)}.")
     if not src_path.is_file():
@@ -153,19 +147,17 @@ def decrypt_file(
                 raise DecryptionError(
                     "File was encrypted with a password — use decrypt_file_with_password()."
                 )
-            _decrypt_stream(src, dst)
+            _decrypt_stream_with_cipher(src, dst, aesgcm)  # fix: pass aesgcm correctly
     except (DecryptionError, FileOperationError):
         raise
     except Exception as exc:
         raise DecryptionError(f"File decryption failed — wrong key or corrupted data: {exc}") from exc
-
 
 def decrypt_file_with_password(
     src_path: Path,
     dst_path: Path,
     password: str,
 ) -> None:
-
     from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
 
     if not src_path.is_file():
@@ -193,14 +185,6 @@ def decrypt_file_with_password(
         raise
     except Exception as exc:
         raise DecryptionError(f"File decryption failed — wrong password or corrupted data: {exc}") from exc
-
-
-def _decrypt_stream(src: BinaryIO, dst: BinaryIO) -> None:
-    """Internal: decrypt chunks from *src* into *dst* — cipher already set up by caller."""
-    # This variant is used when the AESGCM object is constructed before opening the file.
-    # We re-read chunk_size from the already-consumed header, so state is in the stream.
-    _decrypt_chunks(src, dst, None)
-
 
 def _decrypt_stream_with_cipher(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM) -> None:
     """Internal: decrypt chunks using a pre-built *aesgcm* object."""
