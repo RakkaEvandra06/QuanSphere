@@ -24,7 +24,6 @@ _KDF_TAG_RAW     = b"\x00"  # raw key supplied directly
 _KDF_TAG_ARGON2  = b"\x01"  # key derived via Argon2id
 _KDF_TAG_PBKDF2  = b"\x02"  # key derived via PBKDF2
 
-
 def _write_header(
     out: BinaryIO,
     salt: bytes,
@@ -36,7 +35,6 @@ def _write_header(
     out.write(kdf_tag)
     out.write(salt)
     out.write(struct.pack(">I", chunk_size))
-
 
 def _read_header(src: BinaryIO) -> tuple[bytes, bytes, int]:
     """Return ``(kdf_tag, salt, chunk_size)`` parsed from the file header."""
@@ -95,7 +93,6 @@ def encrypt_file_with_password(
 
     aesgcm = AESGCM(derived.key)
     _encrypt_stream(src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag)
-
 
 def _encrypt_stream(
     src_path: Path,
@@ -189,7 +186,6 @@ def decrypt_file_with_password(
 def _decrypt_stream_with_cipher(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM) -> None:
     """Internal: decrypt chunks using a pre-built *aesgcm* object."""
     _decrypt_chunks(src, dst, aesgcm)
-
 
 def _decrypt_chunks(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM | None) -> None:
     """Read and decrypt chunk blocks from *src* (header already consumed)."""
