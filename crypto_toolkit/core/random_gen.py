@@ -7,27 +7,21 @@ import string
 from crypto_toolkit.core.constants import AES_KEY_SIZE
 from crypto_toolkit.core.exceptions import InputValidationError
 
-
 def generate_key(size: int = AES_KEY_SIZE) -> bytes:
 
     if size <= 0:
         raise InputValidationError("Key size must be a positive integer.")
     return secrets.token_bytes(size)
 
-
 def generate_token(nbytes: int = 32) -> str:
-
     if nbytes <= 0:
         raise InputValidationError("Token byte count must be positive.")
     return secrets.token_urlsafe(nbytes)
 
-
 def generate_hex(nbytes: int = 32) -> str:
-
     if nbytes <= 0:
         raise InputValidationError("Byte count must be positive.")
     return secrets.token_hex(nbytes)
-
 
 def generate_password(
     length: int = 20,
@@ -36,7 +30,6 @@ def generate_password(
     use_digits: bool = True,
     use_symbols: bool = True,
 ) -> str:
-
     if length < 12:
         raise InputValidationError("Password length must be at least 12 for security.")
 
@@ -63,9 +56,7 @@ def generate_password(
     secrets.SystemRandom().shuffle(combined)
     return "".join(combined)
 
-
 def generate_bytes_b64(nbytes: int = 32) -> str:
-
     if nbytes <= 0:
         raise InputValidationError("Byte count must be positive.")
     return base64.b64encode(secrets.token_bytes(nbytes)).decode()
