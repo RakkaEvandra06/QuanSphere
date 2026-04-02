@@ -12,28 +12,23 @@ from crypto_toolkit.core.exceptions import KeyGenerationError, SignatureError
 def generate_ed25519_keypair() -> (
     tuple[ed25519.Ed25519PrivateKey, ed25519.Ed25519PublicKey]
 ):
-
     try:
         private_key = ed25519.Ed25519PrivateKey.generate()
         return private_key, private_key.public_key()
     except Exception as exc:
         raise KeyGenerationError("Ed25519 key generation failed.") from exc
 
-
 def sign_ed25519(data: bytes, private_key: ed25519.Ed25519PrivateKey) -> bytes:
-
     try:
         return private_key.sign(data)
     except Exception as exc:
         raise SignatureError("Ed25519 signing failed.") from exc
-
 
 def verify_ed25519(
     data: bytes,
     signature: bytes,
     public_key: ed25519.Ed25519PublicKey,
 ) -> bool:
-
     try:
         public_key.verify(signature, data)
         return True
@@ -60,14 +55,12 @@ def ed25519_private_key_to_pem(
         encryption_algorithm=encryption,
     )
 
-
 def ed25519_public_key_to_pem(key: ed25519.Ed25519PublicKey) -> bytes:
     """Serialise an Ed25519 public key to PEM (SubjectPublicKeyInfo)."""
     return key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-
 
 def load_ed25519_private_key(
     pem: bytes,
@@ -88,7 +81,6 @@ def load_ed25519_private_key(
             "Failed to load Ed25519 private key — wrong password or corrupt PEM."
         ) from exc
 
-
 def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
     """Load an Ed25519 public key from PEM bytes."""
     from crypto_toolkit.core.exceptions import InputValidationError
@@ -106,7 +98,6 @@ def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
 # ── RSA-PSS signatures ────────────────────────────────────────────────────────
 
 def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
-
     try:
         return private_key.sign(
             data,
@@ -119,9 +110,7 @@ def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
     except Exception as exc:
         raise SignatureError("RSA-PSS signing failed.") from exc
 
-
 def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> bool:
-
     try:
         public_key.verify(
             signature,
