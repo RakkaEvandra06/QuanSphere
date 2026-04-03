@@ -12,18 +12,24 @@ from crypto_toolkit.core.constants import (
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
+    PBKDF2_HASH,        
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
+_PBKDF2_HASH_MAP: dict[str, hashes.HashAlgorithm] = {
+    "sha256":   hashes.SHA256(),
+    "sha512":   hashes.SHA512(),
+    "sha3_256": hashes.SHA3_256(),
+    "sha3_512": hashes.SHA3_512(),
+}
 
 class DerivedKey(NamedTuple):
-    """Container for a derived key and its associated salt."""
+    """Container for the derived keys and their salts."""
     key: bytes
     salt: bytes
-
 
 def derive_key_argon2(
     password: str | bytes,
@@ -34,7 +40,6 @@ def derive_key_argon2(
     parallelism: int = ARGON2_PARALLELISM,
     hash_len: int = ARGON2_HASH_LEN,
 ) -> DerivedKey:
-
     if time_cost < 1:
         raise InputValidationError("Argon2 time_cost must be ≥ 1.")
     if memory_cost < 8192:
@@ -46,8 +51,8 @@ def derive_key_argon2(
         from argon2.low_level import Type, hash_secret_raw  # type: ignore[import-untyped]
     except ImportError as exc:
         raise KeyDerivationError(
-            "argon2-cffi is required for Argon2 derivation.  "
-            "Install it with: pip install argon2-cffi"
+            "argon2-cffi is required for Argon2. "
+            "Install with: pip install argon2-cffi"
         ) from exc
 
     if salt is None:
@@ -68,8 +73,7 @@ def derive_key_argon2(
     except (InputValidationError, KeyDerivationError):
         raise
     except Exception as exc:
-        raise KeyDerivationError("Argon2 key derivation failed.") from exc
-
+        raise KeyDerivationError("Argon2 key derivation gagal.") from exc
 
 def derive_key_pbkdf2(
     password: str | bytes,
@@ -78,11 +82,17 @@ def derive_key_pbkdf2(
     iterations: int = PBKDF2_ITERATIONS,
     key_len: int = PBKDF2_KEY_LEN,
 ) -> DerivedKey:
-
     if iterations < 100_000:
         raise InputValidationError(
-            "PBKDF2 iterations must be ≥ 100 000.  "
+            "PBKDF2 iterations must be ≥ 100 000. "
             "OWASP recommends ≥ 600 000 for HMAC-SHA256."
+        )
+
+    algo = _PBKDF2_HASH_MAP.get(PBKDF2_HASH)
+    if algo is None:
+        raise KeyDerivationError(
+            f"Algorithm PBKDF2 is not supported: {PBKDF2_HASH!r}. "
+            f"Valid options: {sorted(_PBKDF2_HASH_MAP)}."
         )
 
     if salt is None:
@@ -90,13 +100,13 @@ def derive_key_pbkdf2(
 
     try:
         password_bytes = password.encode() if isinstance(password, str) else password
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
+        kdf_obj = PBKDF2HMAC(
+            algorithm=algo,
             length=key_len,
             salt=salt,
             iterations=iterations,
         )
-        key = kdf.derive(password_bytes)
+        key = kdf_obj.derive(password_bytes)
         return DerivedKey(key=key, salt=salt)
     except InputValidationError:
         raise
