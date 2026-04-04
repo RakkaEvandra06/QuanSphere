@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from typing import NamedTuple
+from typing import NamedTuple, Type
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -12,22 +12,22 @@ from crypto_toolkit.core.constants import (
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
-    PBKDF2_HASH,        
+    PBKDF2_HASH,
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
-_PBKDF2_HASH_MAP: dict[str, hashes.HashAlgorithm] = {
-    "sha256":   hashes.SHA256(),
-    "sha512":   hashes.SHA512(),
-    "sha3_256": hashes.SHA3_256(),
-    "sha3_512": hashes.SHA3_512(),
+_PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
+    "sha256":   hashes.SHA256,
+    "sha512":   hashes.SHA512,
+    "sha3_256": hashes.SHA3_256,
+    "sha3_512": hashes.SHA3_512,
 }
 
 class DerivedKey(NamedTuple):
-    """Container for the derived keys and their salts."""
+    """Container for a derived key and its corresponding salt."""
     key: bytes
     salt: bytes
 
@@ -41,11 +41,11 @@ def derive_key_argon2(
     hash_len: int = ARGON2_HASH_LEN,
 ) -> DerivedKey:
     if time_cost < 1:
-        raise InputValidationError("Argon2 time_cost must be ≥ 1.")
+        raise InputValidationError("Argon2 time_cost must be >= 1.")
     if memory_cost < 8192:
-        raise InputValidationError("Argon2 memory_cost must be ≥ 8192 KiB (8 MiB).")
+        raise InputValidationError("Argon2 memory_cost must be >= 8192 KiB (8 MiB).")
     if hash_len < 16:
-        raise InputValidationError("Argon2 hash_len must be ≥ 16 bytes.")
+        raise InputValidationError("Argon2 hash_len must be >= 16 bytes.")
 
     try:
         from argon2.low_level import Type, hash_secret_raw  # type: ignore[import-untyped]
@@ -73,7 +73,7 @@ def derive_key_argon2(
     except (InputValidationError, KeyDerivationError):
         raise
     except Exception as exc:
-        raise KeyDerivationError("Argon2 key derivation gagal.") from exc
+        raise KeyDerivationError("Argon2 key derivation failed.") from exc
 
 def derive_key_pbkdf2(
     password: str | bytes,
@@ -84,16 +84,17 @@ def derive_key_pbkdf2(
 ) -> DerivedKey:
     if iterations < 100_000:
         raise InputValidationError(
-            "PBKDF2 iterations must be ≥ 100 000. "
-            "OWASP recommends ≥ 600 000 for HMAC-SHA256."
+            "PBKDF2 iterations must be >= 100,000. "
+            "OWASP recommends >= 600,000 for HMAC-SHA256."
         )
 
-    algo = _PBKDF2_HASH_MAP.get(PBKDF2_HASH)
-    if algo is None:
+    algo_cls = _PBKDF2_HASH_FACTORIES.get(PBKDF2_HASH)
+    if algo_cls is None:
         raise KeyDerivationError(
-            f"Algorithm PBKDF2 is not supported: {PBKDF2_HASH!r}. "
-            f"Valid options: {sorted(_PBKDF2_HASH_MAP)}."
+            f"Unsupported PBKDF2 hash algorithm: {PBKDF2_HASH!r}. "
+            f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
+    algo = algo_cls()   # new instance per call — thread-safe
 
     if salt is None:
         salt = secrets.token_bytes(PBKDF2_SALT_LEN)
