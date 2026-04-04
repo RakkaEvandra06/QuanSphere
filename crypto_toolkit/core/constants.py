@@ -7,12 +7,12 @@ AES_TAG_SIZE = 16          # GCM authentication tag (bytes)
 CHACHA_KEY_SIZE = 32       # ChaCha20-Poly1305 key (bytes)
 CHACHA_NONCE_SIZE = 12     # RFC 8439 standard nonce length (bytes)
 
-# ── Asymmetric / RSA ─────────────────────────────────────────────────────────
+# ── Asymmetric / RSA ──────────────────────────────────────────────────────────
 
 RSA_KEY_SIZE = 4096        # bits — 2048 is the absolute minimum; defaults to 4096
 RSA_PUBLIC_EXPONENT = 65537
 
-# ── ECC ──────────────────────────────────────────────────────────────────────
+# ── ECC ───────────────────────────────────────────────────────────────────────
 
 ECC_CURVE = "secp256r1"    # NIST P-256, widely supported and audited
 
@@ -23,7 +23,7 @@ DEFAULT_HASH = "sha256"
 
 # ── Key derivation (Argon2id) ─────────────────────────────────────────────────
 
-ARGON2_TIME_COST = 3       # iterasi
+ARGON2_TIME_COST = 3       # iterations
 ARGON2_MEMORY_COST = 65536 # 64 MiB
 ARGON2_PARALLELISM = 4
 ARGON2_HASH_LEN = 32       # key output length (bytes)
@@ -31,7 +31,7 @@ ARGON2_SALT_LEN = 16       # random salt (bytes)
 
 # ── PBKDF2 (fallback) ────────────────────────────────────────────────────────
 
-PBKDF2_ITERATIONS = 600_000  # Recommendation from OWASP 2023 for PBKDF2-HMAC-SHA256
+PBKDF2_ITERATIONS = 600_000  # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
 PBKDF2_HASH = "sha256"
 PBKDF2_KEY_LEN = 32
 PBKDF2_SALT_LEN = 16
@@ -39,6 +39,11 @@ PBKDF2_SALT_LEN = 16
 # ── File encryption ───────────────────────────────────────────────────────────
 
 FILE_CHUNK_SIZE = 64 * 1024  # 64 KiB per chunk
+
+# Maximum valid encrypted block size: plaintext chunk + nonce + GCM tag + small overhead.
+# This is used in _decrypt_chunks to reject malformed/malicious block-length values and
+# prevent memory-exhaustion DoS attacks.
+FILE_MAX_BLOCK_SIZE = FILE_CHUNK_SIZE + AES_NONCE_SIZE + AES_TAG_SIZE + 1024
 
 # ── Encoded format markers ────────────────────────────────────────────────────
 
