@@ -48,7 +48,7 @@ def derive_key_argon2(
         raise InputValidationError("Argon2 hash_len must be >= 16 bytes.")
 
     try:
-        from argon2.low_level import Type, hash_secret_raw  # type: ignore[import-untyped]
+        from argon2.low_level import Type as Argon2Type, hash_secret_raw  # type: ignore[import-untyped]
     except ImportError as exc:
         raise KeyDerivationError(
             "argon2-cffi is required for Argon2. "
@@ -67,7 +67,7 @@ def derive_key_argon2(
             memory_cost=memory_cost,
             parallelism=parallelism,
             hash_len=hash_len,
-            type=Type.ID,
+            type=Argon2Type.ID,
         )
         return DerivedKey(key=key, salt=salt)
     except (InputValidationError, KeyDerivationError):
