@@ -52,8 +52,11 @@ def generate_password(
 
     remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
     combined = required + remaining
-    # Shuffle with secrets to avoid predictable positions.
-    secrets.SystemRandom().shuffle(combined)
+
+    for i in range(len(combined) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        combined[i], combined[j] = combined[j], combined[i]
+
     return "".join(combined)
 
 def generate_bytes_b64(nbytes: int = 32) -> str:
