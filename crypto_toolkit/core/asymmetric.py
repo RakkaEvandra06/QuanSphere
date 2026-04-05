@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
     ECDH,
+    SECP256R1,
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -43,18 +44,14 @@ def generate_rsa_keypair(
     except Exception as exc:
         raise KeyGenerationError("RSA key generation failed.") from exc
 
-
 def generate_ecc_keypair() -> tuple[EllipticCurvePrivateKey, EllipticCurvePublicKey]:
-
     try:
         private_key = ec.generate_private_key(ec.SECP256R1())
         return private_key, private_key.public_key()
     except Exception as exc:
         raise KeyGenerationError("ECC key generation failed.") from exc
 
-
 def generate_x25519_keypair() -> tuple[x25519.X25519PrivateKey, x25519.X25519PublicKey]:
-
     try:
         private_key = x25519.X25519PrivateKey.generate()
         return private_key, private_key.public_key()
@@ -98,7 +95,6 @@ def load_private_key(
     except Exception as exc:
         raise InputValidationError("Failed to load private key — wrong password or corrupt PEM.") from exc
 
-
 def load_public_key(
     pem: bytes,
 ) -> RSAPublicKey | EllipticCurvePublicKey | x25519.X25519PublicKey:
@@ -111,7 +107,6 @@ def load_public_key(
 # ── RSA Encryption / Decryption ───────────────────────────────────────────────
 
 def rsa_encrypt(plaintext: bytes, public_key: RSAPublicKey) -> bytes:
-
     try:
         return public_key.encrypt(
             plaintext,
@@ -126,9 +121,7 @@ def rsa_encrypt(plaintext: bytes, public_key: RSAPublicKey) -> bytes:
     except Exception as exc:
         raise EncryptionError("RSA encryption failed.") from exc
 
-
 def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
-
     try:
         return private_key.decrypt(
             ciphertext,
@@ -143,34 +136,48 @@ def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
 
 # ── ECC Hybrid Encryption ─────────────────────────────────────────────────────
 
-def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) -> bytes:
+def _assert_secp256r1(key: EllipticCurvePublicKey | EllipticCurvePrivateKey, operation: str) -> None:
+    curve = (
+        key.public_key().curve
+        if isinstance(key, EllipticCurvePrivateKey)
+        else key.curve
+    )
+    if not isinstance(curve, SECP256R1):
+        raise InputValidationError(
+            f"ECC {operation} requires a SECP256R1 key; "
+            f"received {type(curve).__name__}."
+        )
 
+def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) -> bytes:
+    _assert_secp256r1(recipient_pub, "hybrid encryption")
     try:
         ephemeral_priv = ec.generate_private_key(ec.SECP256R1())
         ephemeral_pub = ephemeral_priv.public_key()
         shared_secret = ephemeral_priv.exchange(ECDH(), recipient_pub)
 
+        ephemeral_pub_bytes = ephemeral_pub.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
-            salt=None,
-            info=b"crypto-toolkit-ecc-hybrid-v1",
+            salt=ephemeral_pub_bytes,
+            info=b"crypto-toolkit-ecc-hybrid-v4",
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
         ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, None)
 
-        ephemeral_pub_bytes = ephemeral_pub.public_bytes(
-            serialization.Encoding.X962,
-            serialization.PublicFormat.UncompressedPoint,
-        )
         return ephemeral_pub_bytes + nonce + ciphertext
+    except InputValidationError:
+        raise
     except Exception as exc:
         raise EncryptionError("ECC hybrid encryption failed.") from exc
 
-
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
-
+    _assert_secp256r1(private_key, "hybrid decryption")
     try:
         pub_len = 65
         ephemeral_pub_bytes = envelope[:pub_len]
@@ -185,45 +192,45 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
-            salt=None,
-            info=b"crypto-toolkit-ecc-hybrid-v1",
+            salt=ephemeral_pub_bytes,
+            info=b"crypto-toolkit-ecc-hybrid-v4",
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+    except InputValidationError:
+        raise
     except Exception as exc:
         raise DecryptionError("ECC hybrid decryption failed — wrong key or corrupted data.") from exc
 
 # ── X25519 Hybrid Encryption ──────────────────────────────────────────────────
 
 def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKey) -> bytes:
-
     try:
         ephemeral_priv = x25519.X25519PrivateKey.generate()
         ephemeral_pub = ephemeral_priv.public_key()
         shared_secret = ephemeral_priv.exchange(recipient_pub)
 
+        # Raw X25519 public key is always 32 bytes.
+        ephemeral_pub_bytes = ephemeral_pub.public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
-            salt=None,
-            info=b"crypto-toolkit-x25519-hybrid-v1",
+            salt=ephemeral_pub_bytes,
+            info=b"crypto-toolkit-x25519-hybrid-v4",
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
         ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, None)
 
-        ephemeral_pub_bytes = ephemeral_pub.public_bytes(
-            serialization.Encoding.Raw,
-            serialization.PublicFormat.Raw,
-        )
-        # Raw X25519 public key is always 32 bytes.
         return ephemeral_pub_bytes + nonce + ciphertext
     except Exception as exc:
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
 
-
 def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey) -> bytes:
-
     try:
         pub_len = 32  # Raw X25519 public key is always 32 bytes
         ephemeral_pub_bytes = envelope[:pub_len]
@@ -236,8 +243,8 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
-            salt=None,
-            info=b"crypto-toolkit-x25519-hybrid-v1",
+            salt=ephemeral_pub_bytes,
+            info=b"crypto-toolkit-x25519-hybrid-v4",
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
