@@ -27,9 +27,10 @@ _PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
 }
 
 class DerivedKey(NamedTuple):
-    """Container for a derived key and its corresponding salt."""
     key: bytes
     salt: bytes
+    pbkdf2_hash: str | None = None
+    pbkdf2_iterations: int | None = None
 
 def derive_key_argon2(
     password: str | bytes,
@@ -69,6 +70,7 @@ def derive_key_argon2(
             hash_len=hash_len,
             type=Argon2Type.ID,
         )
+        # pbkdf2_hash and pbkdf2_iterations remain None — not applicable to Argon2.
         return DerivedKey(key=key, salt=salt)
     except (InputValidationError, KeyDerivationError):
         raise
@@ -81,6 +83,7 @@ def derive_key_pbkdf2(
     salt: bytes | None = None,
     iterations: int = PBKDF2_ITERATIONS,
     key_len: int = PBKDF2_KEY_LEN,
+    hash_algorithm: str = PBKDF2_HASH,
 ) -> DerivedKey:
     if iterations < 100_000:
         raise InputValidationError(
@@ -88,10 +91,10 @@ def derive_key_pbkdf2(
             "OWASP recommends >= 600,000 for HMAC-SHA256."
         )
 
-    algo_cls = _PBKDF2_HASH_FACTORIES.get(PBKDF2_HASH)
+    algo_cls = _PBKDF2_HASH_FACTORIES.get(hash_algorithm)
     if algo_cls is None:
         raise KeyDerivationError(
-            f"Unsupported PBKDF2 hash algorithm: {PBKDF2_HASH!r}. "
+            f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
             f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
     algo = algo_cls()   # new instance per call — thread-safe
@@ -108,7 +111,12 @@ def derive_key_pbkdf2(
             iterations=iterations,
         )
         key = kdf_obj.derive(password_bytes)
-        return DerivedKey(key=key, salt=salt)
+        return DerivedKey(
+            key=key,
+            salt=salt,
+            pbkdf2_hash=hash_algorithm,
+            pbkdf2_iterations=iterations,
+        )
     except InputValidationError:
         raise
     except Exception as exc:
