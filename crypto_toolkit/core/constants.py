@@ -36,13 +36,20 @@ PBKDF2_HASH = "sha256"
 PBKDF2_KEY_LEN = 32
 PBKDF2_SALT_LEN = 16
 
+# ── PBKDF2 hash tag encoding (Bug 3 fix) ─────────────────────────────────────
+
+PBKDF2_HASH_TO_TAG: dict[str, bytes] = {
+    "sha256":   b"\x01",
+    "sha512":   b"\x02",
+    "sha3_256": b"\x03",
+    "sha3_512": b"\x04",
+}
+PBKDF2_TAG_TO_HASH: dict[bytes, str] = {v: k for k, v in PBKDF2_HASH_TO_TAG.items()}
+
 # ── File encryption ───────────────────────────────────────────────────────────
 
 FILE_CHUNK_SIZE = 64 * 1024  # 64 KiB per chunk
 
-# Maximum valid encrypted block size: plaintext chunk + nonce + GCM tag + small overhead.
-# This is used in _decrypt_chunks to reject malformed/malicious block-length values and
-# prevent memory-exhaustion DoS attacks.
 FILE_MAX_BLOCK_SIZE = FILE_CHUNK_SIZE + AES_NONCE_SIZE + AES_TAG_SIZE + 1024
 
 # ── Encoded format markers ────────────────────────────────────────────────────
