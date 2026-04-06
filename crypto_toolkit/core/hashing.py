@@ -14,7 +14,6 @@ except AttributeError:                # pragma: no cover
     _HashType = Any                   # type: ignore[assignment,misc]
 
 def _get_hash_obj(algorithm: str) -> _HashType:
-    """Create and return a hash object for the requested algorithm."""
     algo = algorithm.lower()
     if algo not in HASH_ALGORITHMS:
         raise InputValidationError(
@@ -22,7 +21,7 @@ def _get_hash_obj(algorithm: str) -> _HashType:
             f"Choose from: {sorted(HASH_ALGORITHMS)}."
         )
     if algo == "blake2b":
-        return hashlib.blake2b(digest_size=32)
+        return hashlib.blake2b()
     return hashlib.new(algo)
 
 def hash_data(data: bytes, algorithm: str = DEFAULT_HASH) -> str:
