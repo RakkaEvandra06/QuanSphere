@@ -79,7 +79,19 @@ def _write_output(data: str | bytes, output_file: Optional[Path], label: str) ->
         output_file.write_bytes(raw)
         output.success(f"Output written to: {output_file}")
     else:
-        output.result(label, data if isinstance(data, str) else data.decode(errors="replace"))
+        if isinstance(data, bytes):
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                output.warn(
+                    "Decrypted output contains binary data that cannot be safely "
+                    "displayed in the terminal.  Re-run with [bold]--output <file>[/bold] "
+                    "to write the raw bytes to disk."
+                )
+                return
+        else:
+            text = data
+        output.result(label, text)
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -120,6 +132,12 @@ def encrypt(
         if prompt_password:
             password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
         if password:
+            if algorithm != SymAlgo.aes_gcm:
+                output.warn(
+                    f"[bold]--algo {algorithm.value}[/bold] is ignored when "
+                    "[bold]--password[/bold] is used.  Password-based encryption "
+                    "always uses AES-256-GCM via the PBE path."
+                )
             token = pbe.password_encrypt(data, password)
             _write_output(token, output_file, "Encrypted (PBE)")
             return
