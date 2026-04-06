@@ -137,15 +137,10 @@ def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
 # ── ECC Hybrid Encryption ─────────────────────────────────────────────────────
 
 def _assert_secp256r1(key: EllipticCurvePublicKey | EllipticCurvePrivateKey, operation: str) -> None:
-    curve = (
-        key.public_key().curve
-        if isinstance(key, EllipticCurvePrivateKey)
-        else key.curve
-    )
-    if not isinstance(curve, SECP256R1):
+    if not isinstance(key.curve, SECP256R1):
         raise InputValidationError(
             f"ECC {operation} requires a SECP256R1 key; "
-            f"received {type(curve).__name__}."
+            f"received {type(key.curve).__name__}."
         )
 
 def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) -> bytes:
@@ -178,11 +173,18 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
 
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
     _assert_secp256r1(private_key, "hybrid decryption")
+    _ECC_PUB_LEN = 65
+    _ECC_MIN_ENVELOPE = _ECC_PUB_LEN + AES_NONCE_SIZE + 1
+    if len(envelope) < _ECC_MIN_ENVELOPE:
+        raise DecryptionError(
+            f"ECC envelope is too short ({len(envelope)} bytes); "
+            f"minimum expected is {_ECC_MIN_ENVELOPE} bytes."
+        )
+
     try:
-        pub_len = 65
-        ephemeral_pub_bytes = envelope[:pub_len]
-        nonce = envelope[pub_len : pub_len + AES_NONCE_SIZE]
-        ciphertext = envelope[pub_len + AES_NONCE_SIZE :]
+        ephemeral_pub_bytes = envelope[:_ECC_PUB_LEN]
+        nonce = envelope[_ECC_PUB_LEN : _ECC_PUB_LEN + AES_NONCE_SIZE]
+        ciphertext = envelope[_ECC_PUB_LEN + AES_NONCE_SIZE :]
 
         ephemeral_pub = ec.EllipticCurvePublicKey.from_encoded_point(
             ec.SECP256R1(), ephemeral_pub_bytes
@@ -198,6 +200,8 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
     except InputValidationError:
+        raise
+    except DecryptionError:
         raise
     except Exception as exc:
         raise DecryptionError("ECC hybrid decryption failed — wrong key or corrupted data.") from exc
@@ -231,11 +235,18 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
 
 def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey) -> bytes:
+    _X25519_PUB_LEN = 32
+    _X25519_MIN_ENVELOPE = _X25519_PUB_LEN + AES_NONCE_SIZE + 1
+    if len(envelope) < _X25519_MIN_ENVELOPE:
+        raise DecryptionError(
+            f"X25519 envelope is too short ({len(envelope)} bytes); "
+            f"minimum expected is {_X25519_MIN_ENVELOPE} bytes."
+        )
+
     try:
-        pub_len = 32  # Raw X25519 public key is always 32 bytes
-        ephemeral_pub_bytes = envelope[:pub_len]
-        nonce = envelope[pub_len : pub_len + AES_NONCE_SIZE]
-        ciphertext = envelope[pub_len + AES_NONCE_SIZE :]
+        ephemeral_pub_bytes = envelope[:_X25519_PUB_LEN]
+        nonce = envelope[_X25519_PUB_LEN : _X25519_PUB_LEN + AES_NONCE_SIZE]
+        ciphertext = envelope[_X25519_PUB_LEN + AES_NONCE_SIZE :]
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ephemeral_pub)
@@ -248,5 +259,7 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+    except DecryptionError:
+        raise
     except Exception as exc:
         raise DecryptionError("X25519 hybrid decryption failed — wrong key or corrupted data.") from exc
