@@ -30,6 +30,15 @@ def generate_password(
     use_digits: bool = True,
     use_symbols: bool = True,
 ) -> str:
+    all_classes_disabled = not use_uppercase and not use_digits and not use_symbols
+    if all_classes_disabled and length < 16:
+        raise InputValidationError(
+            "A lowercase-only password (use_uppercase=False, use_digits=False, "
+            "use_symbols=False) requires at least 16 characters to maintain "
+            "acceptable entropy.  Either increase the length or enable at least "
+            "one additional character class."
+        )
+
     if length < 12:
         raise InputValidationError("Password length must be at least 12 for security.")
 
