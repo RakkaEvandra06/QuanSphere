@@ -14,6 +14,8 @@ from crypto_toolkit.core.constants import (
     FILE_ENC_MAGIC,
     FILE_MAX_BLOCK_SIZE,
     ENVELOPE_VERSION,
+    PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
+    PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
 from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, FileOperationError
 
@@ -30,17 +32,25 @@ _KDF_TAG_PBKDF2 = b"\x02"  # key derived via PBKDF2
 def _write_header(
     out: BinaryIO,
     salt: bytes,
-    chunk_size: int,
     kdf_tag: bytes = _KDF_TAG_RAW,
+    *,
+    pbkdf2_hash_tag: bytes | None = None,
+    pbkdf2_iterations: int | None = None,
 ) -> None:
     out.write(FILE_ENC_MAGIC)
     out.write(ENVELOPE_VERSION)
     out.write(kdf_tag)
     out.write(salt)
-    out.write(struct.pack(">I", chunk_size))
+    if kdf_tag == _KDF_TAG_PBKDF2:
+        if pbkdf2_hash_tag is None or pbkdf2_iterations is None:
+            raise EncryptionError(
+                "pbkdf2_hash_tag and pbkdf2_iterations must be provided "
+                "when kdf_tag is _KDF_TAG_PBKDF2."
+            )
+        out.write(pbkdf2_hash_tag)
+        out.write(struct.pack(">I", pbkdf2_iterations))
 
-def _read_header(src: BinaryIO) -> tuple[bytes, bytes, int]:
-    """Return ``(kdf_tag, salt, chunk_size)`` parsed from the file header."""
+def _read_header(src: BinaryIO) -> tuple[bytes, bytes, str | None, int | None]:
     magic = src.read(len(FILE_ENC_MAGIC))
     if magic != FILE_ENC_MAGIC:
         raise DecryptionError("Invalid encrypted file (incorrect magic bytes).")
@@ -53,8 +63,20 @@ def _read_header(src: BinaryIO) -> tuple[bytes, bytes, int]:
     salt = src.read(_HEADER_SALT_LEN)
     if len(salt) != _HEADER_SALT_LEN:
         raise DecryptionError("File header truncated (salt field).")
-    (chunk_size,) = struct.unpack(">I", src.read(4))
-    return kdf_tag, salt, chunk_size
+
+    pbkdf2_hash: str | None = None
+    pbkdf2_iterations: int | None = None
+
+    if kdf_tag == _KDF_TAG_PBKDF2:
+        hash_tag_byte = src.read(1)
+        pbkdf2_hash   = _PBKDF2_TAG_TO_HASH.get(hash_tag_byte)
+        if pbkdf2_hash is None:
+            raise DecryptionError(
+                f"Unrecognized PBKDF2 hash tag in file header: {hash_tag_byte!r}."
+            )
+        (pbkdf2_iterations,) = struct.unpack(">I", src.read(4))
+
+    return kdf_tag, salt, pbkdf2_hash, pbkdf2_iterations
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -73,7 +95,10 @@ def encrypt_file(
 
     aesgcm = AESGCM(key)
     salt = b"\x00" * _HEADER_SALT_LEN   # zero salt signals a raw key (no KDF was used)
-    _encrypt_stream(src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW)
+    _encrypt_stream(
+        src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW,
+        pbkdf2_hash_tag=None, pbkdf2_iterations=None,
+    )
 
 def encrypt_file_with_password(
     src_path: Path,
@@ -90,14 +115,26 @@ def encrypt_file_with_password(
         raise FileOperationError(f"Source file not found: {src_path}")
 
     if use_argon2:
-        derived = derive_key_argon2(password)
-        kdf_tag = _KDF_TAG_ARGON2
+        derived  = derive_key_argon2(password)
+        kdf_tag  = _KDF_TAG_ARGON2
+        pbkdf2_hash_tag   = None
+        pbkdf2_iterations = None
     else:
-        derived = derive_key_pbkdf2(password)
-        kdf_tag = _KDF_TAG_PBKDF2
+        derived  = derive_key_pbkdf2(password)
+        kdf_tag  = _KDF_TAG_PBKDF2
+        pbkdf2_hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash or "")
+        if pbkdf2_hash_tag is None:
+            raise EncryptionError(
+                f"Cannot encode PBKDF2 hash {derived.pbkdf2_hash!r} into file header."
+            )
+        pbkdf2_iterations = derived.pbkdf2_iterations
 
     aesgcm = AESGCM(derived.key)
-    _encrypt_stream(src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag)
+    _encrypt_stream(
+        src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag,
+        pbkdf2_hash_tag=pbkdf2_hash_tag,
+        pbkdf2_iterations=pbkdf2_iterations,
+    )
 
 def decrypt_file(
     src_path: Path,
@@ -114,7 +151,7 @@ def decrypt_file(
     tmp_path = _tmp_path_for(dst_path)
     try:
         with src_path.open("rb") as src, tmp_path.open("wb") as dst:
-            kdf_tag, _salt, _chunk_size = _read_header(src)
+            kdf_tag, _salt, _pbkdf2_hash, _pbkdf2_iter = _read_header(src)
             if kdf_tag != _KDF_TAG_RAW:
                 raise DecryptionError(
                     "This file was encrypted with a password — use decrypt_file_with_password()."
@@ -144,7 +181,7 @@ def decrypt_file_with_password(
     tmp_path = _tmp_path_for(dst_path)
     try:
         with src_path.open("rb") as src, tmp_path.open("wb") as dst:
-            kdf_tag, salt, _chunk_size = _read_header(src)
+            kdf_tag, salt, pbkdf2_hash, pbkdf2_iterations = _read_header(src)
             if kdf_tag == _KDF_TAG_RAW:
                 raise DecryptionError(
                     "This file was encrypted with a raw key — use decrypt_file()."
@@ -152,7 +189,12 @@ def decrypt_file_with_password(
             elif kdf_tag == _KDF_TAG_ARGON2:
                 derived = derive_key_argon2(password, salt=salt)
             elif kdf_tag == _KDF_TAG_PBKDF2:
-                derived = derive_key_pbkdf2(password, salt=salt)
+                derived = derive_key_pbkdf2(
+                    password,
+                    salt=salt,
+                    iterations=pbkdf2_iterations,   # type: ignore[arg-type]
+                    hash_algorithm=pbkdf2_hash,      # type: ignore[arg-type]
+                )
             else:
                 raise DecryptionError(f"Unrecognized KDF tag: {kdf_tag!r}.")
             aesgcm_local = AESGCM(derived.key)
@@ -187,11 +229,18 @@ def _encrypt_stream(
     salt: bytes,
     chunk_size: int,
     kdf_tag: bytes,
+    *,
+    pbkdf2_hash_tag: bytes | None,
+    pbkdf2_iterations: int | None,
 ) -> None:
     tmp_path = _tmp_path_for(dst_path)
     try:
         with src_path.open("rb") as src, tmp_path.open("wb") as dst:
-            _write_header(dst, salt, chunk_size, kdf_tag)
+            _write_header(
+                dst, salt, kdf_tag,
+                pbkdf2_hash_tag=pbkdf2_hash_tag,
+                pbkdf2_iterations=pbkdf2_iterations,
+            )
             chunk_index = 0
             while True:
                 chunk = src.read(chunk_size)
