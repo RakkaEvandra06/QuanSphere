@@ -34,8 +34,15 @@ def verify_ed25519(
         return True
     except InvalidSignature:
         return False
+    except (ValueError, TypeError) as exc:
+        raise SignatureError(
+            "Ed25519 verification received malformed input — "
+            "the signature bytes or key may be corrupt."
+        ) from exc
     except Exception as exc:
-        raise SignatureError("Ed25519 verification encountered an unexpected error.") from exc
+        raise SignatureError(
+            "Ed25519 verification encountered an unexpected error."
+        ) from exc
 
 # ── Ed25519 key serialisation ─────────────────────────────────────────────────
 
@@ -93,7 +100,9 @@ def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
     except InputValidationError:
         raise
     except Exception as exc:
-        raise InputValidationError("Failed to load Ed25519 public key — corrupt PEM.") from exc
+        raise InputValidationError(
+            "Failed to load Ed25519 public key — corrupt PEM."
+        ) from exc
 
 # ── RSA-PSS signatures ────────────────────────────────────────────────────────
 
@@ -124,5 +133,12 @@ def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> b
         return True
     except InvalidSignature:
         return False
+    except (ValueError, TypeError) as exc:
+        raise SignatureError(
+            "RSA-PSS verification received malformed input — "
+            "the signature bytes or key may be corrupt."
+        ) from exc
     except Exception as exc:
-        raise SignatureError("RSA-PSS verification encountered an unexpected error.") from exc
+        raise SignatureError(
+            "RSA-PSS verification encountered an unexpected error."
+        ) from exc
