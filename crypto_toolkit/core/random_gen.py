@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import base64
+import math
 import secrets
 import string
 
 from crypto_toolkit.core.constants import AES_KEY_SIZE
 from crypto_toolkit.core.exceptions import InputValidationError
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_MIN_PASSWORD_ENTROPY_BITS = 60
 
 def generate_key(size: int = AES_KEY_SIZE) -> bytes:
 
@@ -30,15 +35,6 @@ def generate_password(
     use_digits: bool = True,
     use_symbols: bool = True,
 ) -> str:
-    all_classes_disabled = not use_uppercase and not use_digits and not use_symbols
-    if all_classes_disabled and length < 16:
-        raise InputValidationError(
-            "A lowercase-only password (use_uppercase=False, use_digits=False, "
-            "use_symbols=False) requires at least 16 characters to maintain "
-            "acceptable entropy.  Either increase the length or enable at least "
-            "one additional character class."
-        )
-
     if length < 12:
         raise InputValidationError("Password length must be at least 12 for security.")
 
@@ -49,6 +45,15 @@ def generate_password(
         alphabet += string.digits
     if use_symbols:
         alphabet += "!@#$%^&*()-_=+"
+
+    entropy_bits = length * math.log2(len(alphabet))
+    if entropy_bits < _MIN_PASSWORD_ENTROPY_BITS:
+        raise InputValidationError(
+            f"The requested password has insufficient entropy "
+            f"({entropy_bits:.0f} bits; minimum is {_MIN_PASSWORD_ENTROPY_BITS} bits). "
+            f"Increase the length or enable additional character classes "
+            f"(uppercase, digits, symbols)."
+        )
 
     # Guarantee at least one character from each selected category.
     required: list[str] = [secrets.choice(string.ascii_lowercase)]
