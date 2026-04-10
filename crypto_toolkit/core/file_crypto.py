@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 import struct
 from pathlib import Path
@@ -78,6 +79,31 @@ def _read_header(src: BinaryIO) -> tuple[bytes, bytes, str | None, int | None]:
 
     return kdf_tag, salt, pbkdf2_hash, pbkdf2_iterations
 
+def _build_header_bytes(
+    salt: bytes,
+    kdf_tag: bytes,
+    *,
+    pbkdf2_hash_tag: bytes | None,
+    pbkdf2_iterations: int | None,
+) -> bytes:
+    """Return the exact byte sequence that _write_header writes, for use as AAD."""
+    parts: list[bytes] = [FILE_ENC_MAGIC, ENVELOPE_VERSION, kdf_tag, salt]
+    if kdf_tag == _KDF_TAG_PBKDF2:
+        if pbkdf2_hash_tag is None or pbkdf2_iterations is None:
+            raise EncryptionError(
+                "pbkdf2_hash_tag and pbkdf2_iterations are required when "
+                "kdf_tag is _KDF_TAG_PBKDF2 — cannot build a valid header."
+            )
+        parts.append(pbkdf2_hash_tag)
+        parts.append(struct.pack(">I", pbkdf2_iterations))
+    return b"".join(parts)
+
+def _chunk_aad(chunk_index: int, header_bytes: bytes) -> bytes:
+    """Return the AAD for a given chunk."""
+    index_bytes  = struct.pack(">Q", chunk_index)
+    header_digest = hashlib.sha256(header_bytes).digest()
+    return index_bytes + header_digest
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def encrypt_file(
@@ -151,12 +177,17 @@ def decrypt_file(
     tmp_path = _tmp_path_for(dst_path)
     try:
         with src_path.open("rb") as src, tmp_path.open("wb") as dst:
-            kdf_tag, _salt, _pbkdf2_hash, _pbkdf2_iter = _read_header(src)
+            kdf_tag, salt, _pbkdf2_hash, pbkdf2_iterations = _read_header(src)
             if kdf_tag != _KDF_TAG_RAW:
                 raise DecryptionError(
                     "This file was encrypted with a password — use decrypt_file_with_password()."
                 )
-            _decrypt_chunks(src, dst, aesgcm)
+            header_bytes = _build_header_bytes(
+                salt, kdf_tag,
+                pbkdf2_hash_tag=None,
+                pbkdf2_iterations=None,
+            )
+            _decrypt_chunks(src, dst, aesgcm, header_bytes)
         tmp_path.replace(dst_path)
     except (DecryptionError, FileOperationError):
         _cleanup_tmp(tmp_path)
@@ -188,17 +219,25 @@ def decrypt_file_with_password(
                 )
             elif kdf_tag == _KDF_TAG_ARGON2:
                 derived = derive_key_argon2(password, salt=salt)
+                pbkdf2_hash_tag_for_aad: bytes | None = None
             elif kdf_tag == _KDF_TAG_PBKDF2:
                 derived = derive_key_pbkdf2(
                     password,
                     salt=salt,
                     iterations=pbkdf2_iterations,   # type: ignore[arg-type]
-                    hash_algorithm=pbkdf2_hash,      # type: ignore[arg-type]
+                    hash_algorithm=pbkdf2_hash,     # type: ignore[arg-type]
                 )
+                pbkdf2_hash_tag_for_aad = _PBKDF2_HASH_TO_TAG.get(pbkdf2_hash or "")
             else:
                 raise DecryptionError(f"Unrecognized KDF tag: {kdf_tag!r}.")
+
+            header_bytes = _build_header_bytes(
+                salt, kdf_tag,
+                pbkdf2_hash_tag=pbkdf2_hash_tag_for_aad,
+                pbkdf2_iterations=pbkdf2_iterations,
+            )
             aesgcm_local = AESGCM(derived.key)
-            _decrypt_chunks(src, dst, aesgcm_local)
+            _decrypt_chunks(src, dst, aesgcm_local, header_bytes)
         tmp_path.replace(dst_path)
     except (DecryptionError, FileOperationError):
         _cleanup_tmp(tmp_path)
@@ -233,6 +272,11 @@ def _encrypt_stream(
     pbkdf2_hash_tag: bytes | None,
     pbkdf2_iterations: int | None,
 ) -> None:
+    header_bytes = _build_header_bytes(
+        salt, kdf_tag,
+        pbkdf2_hash_tag=pbkdf2_hash_tag,
+        pbkdf2_iterations=pbkdf2_iterations,
+    )
     tmp_path = _tmp_path_for(dst_path)
     try:
         with src_path.open("rb") as src, tmp_path.open("wb") as dst:
@@ -248,8 +292,7 @@ def _encrypt_stream(
                     dst.write(struct.pack(_CHUNK_LEN_FMT, 0))
                     break
                 nonce = secrets.token_bytes(AES_NONCE_SIZE)
-                # Bind the chunk index to the AAD to prevent chunk-reordering attacks.
-                aad = struct.pack(">Q", chunk_index)
+                aad = _chunk_aad(chunk_index, header_bytes)
                 ciphertext = aesgcm.encrypt(nonce, chunk, aad)
                 block = nonce + ciphertext
                 dst.write(struct.pack(_CHUNK_LEN_FMT, len(block)))
@@ -264,7 +307,7 @@ def _encrypt_stream(
         _cleanup_tmp(tmp_path)
         raise FileOperationError(f"File encryption failed: {exc}") from exc
 
-def _decrypt_chunks(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM) -> None:
+def _decrypt_chunks(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM, header_bytes: bytes) -> None:
     """Read and decrypt all chunks from *src* (file header already consumed)."""
     chunk_index = 0
     while True:
@@ -285,7 +328,7 @@ def _decrypt_chunks(src: BinaryIO, dst: BinaryIO, aesgcm: AESGCM) -> None:
             raise DecryptionError("Unexpected end of file (chunk data truncated).")
         nonce = block[:AES_NONCE_SIZE]
         ciphertext = block[AES_NONCE_SIZE:]
-        aad = struct.pack(">Q", chunk_index)
+        aad = _chunk_aad(chunk_index, header_bytes)
         plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
         dst.write(plaintext)
         chunk_index += 1
