@@ -42,6 +42,9 @@ def hash_stream(
 ) -> str:
     """Hash the stream incrementally and return the hex digest."""
     try:
+        if hasattr(stream, "seekable") and stream.seekable():
+            stream.seek(0)
+
         h = _get_hash_obj(algorithm)
         while chunk := stream.read(chunk_size):
             h.update(chunk)
