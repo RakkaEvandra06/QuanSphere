@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
     ECDH,
     SECP256R1,
+    from_encoded_point as ec_from_encoded_point,
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -26,6 +27,13 @@ from crypto_toolkit.core.exceptions import (
     InputValidationError,
     KeyGenerationError,
 )
+
+# Expected first byte for an uncompressed SEC1 elliptic-curve point (X9.62 §4.3.6).
+_UNCOMPRESSED_POINT_PREFIX = 0x04
+# P-256 uncompressed point: 1-byte 0x04 prefix + 32-byte X + 32-byte Y = 65 bytes.
+_ECC_UNCOMPRESSED_PUB_LEN: int = 65
+# X25519 raw public key is always 32 bytes (RFC 7748 §6.1).
+_X25519_PUB_LEN: int = 32
 
 # ── RSA Key management ────────────────────────────────────────────────────────
 
@@ -173,22 +181,28 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
 
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
     _assert_secp256r1(private_key, "hybrid decryption")
-    _ECC_PUB_LEN = 65
-    _ECC_MIN_ENVELOPE = _ECC_PUB_LEN + AES_NONCE_SIZE + 1
+    # Use the module-level constant so encrypt and decrypt always agree on the key length.
+    _ECC_MIN_ENVELOPE = _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + 1
     if len(envelope) < _ECC_MIN_ENVELOPE:
         raise DecryptionError(
             f"ECC envelope is too short ({len(envelope)} bytes); "
             f"minimum expected is {_ECC_MIN_ENVELOPE} bytes."
         )
 
-    try:
-        ephemeral_pub_bytes = envelope[:_ECC_PUB_LEN]
-        nonce = envelope[_ECC_PUB_LEN : _ECC_PUB_LEN + AES_NONCE_SIZE]
-        ciphertext = envelope[_ECC_PUB_LEN + AES_NONCE_SIZE :]
-
-        ephemeral_pub = ec.EllipticCurvePublicKey.from_encoded_point(
-            ec.SECP256R1(), ephemeral_pub_bytes
+    ephemeral_pub_bytes = envelope[:_ECC_UNCOMPRESSED_PUB_LEN]
+    if ephemeral_pub_bytes[0] != _UNCOMPRESSED_POINT_PREFIX:
+        raise DecryptionError(
+            f"ECC envelope contains an invalid ephemeral public key — "
+            f"expected uncompressed point marker 0x04, "
+            f"got 0x{ephemeral_pub_bytes[0]:02x}. "
+            f"The envelope may be corrupt or use an unsupported point encoding."
         )
+
+    try:
+        nonce = envelope[_ECC_UNCOMPRESSED_PUB_LEN : _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE]
+        ciphertext = envelope[_ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE :]
+
+        ephemeral_pub = ec_from_encoded_point(SECP256R1(), ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
         aes_key = HKDF(
@@ -235,7 +249,7 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
 
 def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey) -> bytes:
-    _X25519_PUB_LEN = 32
+    # Use the module-level constant so encrypt and decrypt always agree on the key length.
     _X25519_MIN_ENVELOPE = _X25519_PUB_LEN + AES_NONCE_SIZE + 1
     if len(envelope) < _X25519_MIN_ENVELOPE:
         raise DecryptionError(
