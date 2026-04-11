@@ -97,7 +97,7 @@ def derive_key_pbkdf2(
             f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
             f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
-    algo = algo_cls()   # new instance per call — thread-safe
+    algo = algo_cls()
 
     if salt is None:
         salt = secrets.token_bytes(PBKDF2_SALT_LEN)
