@@ -73,25 +73,27 @@ def _read_plaintext(
     raise typer.Exit(1)
 
 def _write_output(data: str | bytes, output_file: Optional[Path], label: str) -> None:
+    # Normalise to raw bytes once; all subsequent branches use `raw` only.
+    raw: bytes = data.encode() if isinstance(data, str) else data
+
     if output_file:
-        raw = data.encode() if isinstance(data, str) else data
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_bytes(raw)
         output.success(f"Output written to: {output_file}")
-    else:
-        if isinstance(data, bytes):
-            try:
-                text = data.decode("utf-8")
-            except UnicodeDecodeError:
-                output.warn(
-                    "Decrypted output contains binary data that cannot be safely "
-                    "displayed in the terminal.  Re-run with [bold]--output <file>[/bold] "
-                    "to write the raw bytes to disk."
-                )
-                return
-        else:
-            text = data
-        output.result(label, text)
+        return  # Done — no terminal display needed.
+
+    # Terminal display path — operate exclusively on `raw` (no re-check of `data`).
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        output.warn(
+            "Decrypted output contains non-UTF-8 binary data; displaying as hex. "
+            "Use [bold]--output <file>[/bold] to write the raw bytes to disk."
+        )
+        output.result(label + " (hex)", raw.hex())
+        return
+
+    output.result(label, text)
 
 # ── Version ───────────────────────────────────────────────────────────────────
 
@@ -178,6 +180,12 @@ def decrypt(
         if prompt_password:
             password = typer.prompt("Password", hide_input=True)
         if password:
+            if algorithm != SymAlgo.aes_gcm:
+                output.warn(
+                    f"[bold]--algo {algorithm.value}[/bold] is ignored for password-based "
+                    "decryption — the algorithm is embedded in the token envelope and "
+                    "is detected automatically."
+                )
             plaintext = pbe.password_decrypt(raw_token, password)
         elif key_hex:
             key = _parse_hex(key_hex, "--key")
@@ -229,6 +237,9 @@ class KeyType(str, Enum):
     token     = "token"
     password  = "password"
 
+# Minimum password character length — kept in sync with random_gen.generate_password.
+_MIN_PASSWORD_LENGTH = 12
+
 @app.command()
 def generate_key(
     key_type: KeyType = typer.Option(KeyType.symmetric, "--type", "-t", help="Type of key to generate."),
@@ -236,12 +247,19 @@ def generate_key(
     key_password: Optional[str] = typer.Option(
         None, "--key-password", help="Encrypt the private key with this password.", hide_input=True
     ),
-    size: int = typer.Option(32, "--size", "-s", help="Size in bytes for a symmetric key or token."),
+    size: int = typer.Option(
+        32,
+        "--size", "-s",
+        help=(
+            "Byte count for symmetric-key and token types. "
+            f"Character length when --type is 'password' (minimum {_MIN_PASSWORD_LENGTH}, default 32)."
+        ),
+    ),
     output_file: Optional[Path] = typer.Option(
         None, "--output-file", help="Write token/password to a file (for token/password types)."
     ),
 ) -> None:
-    """Generate cryptographic keys (symmetric, RSA-4096, ECC P-256, X25519, Ed25519, token)."""
+    """Generate cryptographic keys (symmetric, RSA-4096, ECC P-256, X25519, Ed25519, token, password)."""
     try:
         if key_type == KeyType.symmetric:
             key = random_gen.generate_key(size)
@@ -258,7 +276,13 @@ def generate_key(
                 output.result("Secure Token", tok)
 
         elif key_type == KeyType.password:
-            pwd = random_gen.generate_password()
+            if size < _MIN_PASSWORD_LENGTH:
+                output.error(
+                    f"Password length (--size) must be at least {_MIN_PASSWORD_LENGTH} "
+                    f"characters for acceptable security. Got: {size}."
+                )
+                raise typer.Exit(1)
+            pwd = random_gen.generate_password(size)
             if output_file:
                 _write_file(output_file, pwd.encode())
             else:
@@ -321,29 +345,43 @@ def generate_key(
 
 # ── sign ──────────────────────────────────────────────────────────────────────
 
+class SignAlgo(str, Enum):
+    ed25519 = "ed25519"
+    rsa_pss = "rsa-pss"
+
 @app.command()
 def sign(
     data: Optional[str] = typer.Argument(
         None,
         help="Data to sign. [dim]Use --stdin or --input-file for sensitive data.[/dim]",
     ),
-    private_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the Ed25519 PEM private key."),
+    private_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the PEM private key."),
     key_password: Optional[str] = typer.Option(
         None, "--key-password", help="Password protecting the private key.", hide_input=True
+    ),
+    algorithm: SignAlgo = typer.Option(
+        SignAlgo.ed25519, "--algo", "-a",
+        help="Signature algorithm: ed25519 (default) or rsa-pss.",
     ),
     stdin: bool = typer.Option(False, "--stdin", help="Read data from stdin."),
     input_file: Optional[Path] = typer.Option(None, "--input-file", "-i", help="Read data from a file."),
     output_file: Optional[Path] = typer.Option(None, "--output", "-o", help="Write signature to a file."),
 ) -> None:
-    """Sign data with an Ed25519 private key."""
+    """Sign data with an Ed25519 or RSA-PSS private key."""
     try:
         raw_data  = _read_plaintext(data, stdin, input_file)
         pem       = private_key_file.read_bytes()
         pwd_bytes = key_password.encode() if key_password else None
-        priv      = signatures.load_ed25519_private_key(pem, pwd_bytes)
-        sig       = signatures.sign_ed25519(raw_data, priv)
-        sig_b64   = base64.b64encode(sig).decode()
-        _write_output(sig_b64, output_file, "Signature (base64)")
+
+        if algorithm == SignAlgo.ed25519:
+            priv = signatures.load_ed25519_private_key(pem, pwd_bytes)
+            sig  = signatures.sign_ed25519(raw_data, priv)
+        else:  # rsa-pss
+            priv = asymmetric.load_private_key(pem, pwd_bytes)
+            sig  = signatures.sign_rsa_pss(raw_data, priv)  # type: ignore[arg-type]
+
+        sig_b64 = base64.b64encode(sig).decode()
+        _write_output(sig_b64, output_file, f"Signature ({algorithm.value}, base64)")
     except CryptoToolkitError as exc:
         _handle_error(exc)
 
@@ -356,22 +394,88 @@ def verify(
         help="Original data to verify. [dim]Use --stdin or --input-file for sensitive data.[/dim]",
     ),
     signature_b64: str = typer.Option(..., "--sig", "-s", help="Base64-encoded signature."),
-    public_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the Ed25519 PEM public key."),
+    public_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the PEM public key."),
+    algorithm: SignAlgo = typer.Option(
+        SignAlgo.ed25519, "--algo", "-a",
+        help="Signature algorithm: ed25519 (default) or rsa-pss.",
+    ),
     stdin: bool = typer.Option(False, "--stdin", help="Read original data from stdin."),
     input_file: Optional[Path] = typer.Option(None, "--input-file", "-i", help="Read original data from a file."),
 ) -> None:
-    """Verify an Ed25519 signature."""
+    """Verify an Ed25519 or RSA-PSS signature."""
     try:
         raw_data = _read_plaintext(data, stdin, input_file)
         pem      = public_key_file.read_bytes()
-        pub      = signatures.load_ed25519_public_key(pem)
         sig      = base64.b64decode(signature_b64.encode())
-        valid    = signatures.verify_ed25519(raw_data, sig, pub)
+
+        if algorithm == SignAlgo.ed25519:
+            pub   = signatures.load_ed25519_public_key(pem)
+            valid = signatures.verify_ed25519(raw_data, sig, pub)
+        else:  # rsa-pss
+            pub   = asymmetric.load_public_key(pem)
+            valid = signatures.verify_rsa_pss(raw_data, sig, pub)  # type: ignore[arg-type]
+
         if valid:
-            output.success("Signature [bold green]VALID[/bold green].")
+            output.success(f"Signature ({algorithm.value}) [bold green]VALID[/bold green].")
         else:
-            output.error("Signature [bold red]INVALID[/bold red].")
+            output.error(f"Signature ({algorithm.value}) [bold red]INVALID[/bold red].")
             raise typer.Exit(1)
+    except CryptoToolkitError as exc:
+        _handle_error(exc)
+
+# ── rsa-encrypt ───────────────────────────────────────────────────────────────
+
+@app.command(name="rsa-encrypt")
+def rsa_encrypt_cmd(
+    plaintext: Optional[str] = typer.Argument(
+        None,
+        help="Text to encrypt. [dim]Use --stdin or --input-file for sensitive data.[/dim]",
+    ),
+    public_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the RSA PEM public key."),
+    stdin: bool = typer.Option(False, "--stdin", help="Read plaintext from stdin."),
+    input_file: Optional[Path] = typer.Option(None, "--input-file", "-i", help="Read plaintext from a file."),
+    output_file: Optional[Path] = typer.Option(None, "--output", "-o", help="Write ciphertext to a file."),
+) -> None:
+    """Encrypt data with an RSA-4096 public key (OAEP / SHA-256)."""
+    try:
+        data    = _read_plaintext(plaintext, stdin, input_file)
+        pem     = public_key_file.read_bytes()
+        pub     = asymmetric.load_public_key(pem)
+        raw_ct  = asymmetric.rsa_encrypt(data, pub)  # type: ignore[arg-type]
+        ct_b64  = base64.b64encode(raw_ct).decode()
+        _write_output(ct_b64, output_file, "RSA Ciphertext (base64)")
+    except CryptoToolkitError as exc:
+        _handle_error(exc)
+
+# ── rsa-decrypt ───────────────────────────────────────────────────────────────
+
+@app.command(name="rsa-decrypt")
+def rsa_decrypt_cmd(
+    ciphertext_b64: Optional[str] = typer.Argument(
+        None, help="Base64-encoded RSA ciphertext. Leave empty to use --stdin."
+    ),
+    private_key_file: Path = typer.Option(..., "--key", "-k", help="Path to the RSA PEM private key."),
+    key_password: Optional[str] = typer.Option(
+        None, "--key-password", help="Password protecting the private key.", hide_input=True
+    ),
+    stdin: bool = typer.Option(False, "--stdin", help="Read ciphertext from stdin."),
+    output_file: Optional[Path] = typer.Option(None, "--output", "-o", help="Write plaintext to a file."),
+) -> None:
+    """Decrypt RSA-OAEP ciphertext with a private key."""
+    try:
+        if stdin:
+            raw_b64 = sys.stdin.buffer.read().decode().strip()
+        elif ciphertext_b64:
+            raw_b64 = ciphertext_b64
+        else:
+            output.error("Provide a ciphertext argument or use --stdin.")
+            raise typer.Exit(1)
+
+        pem       = private_key_file.read_bytes()
+        pwd_bytes = key_password.encode() if key_password else None
+        priv      = asymmetric.load_private_key(pem, pwd_bytes)
+        plaintext = asymmetric.rsa_decrypt(base64.b64decode(raw_b64), priv)  # type: ignore[arg-type]
+        _write_output(plaintext, output_file, "RSA Decrypted")
     except CryptoToolkitError as exc:
         _handle_error(exc)
 
@@ -443,6 +547,9 @@ def decrypt_file(
 
 # ── derive-key ────────────────────────────────────────────────────────────────
 
+# Valid PBKDF2 hash choices — kept in sync with kdf._PBKDF2_HASH_FACTORIES.
+_PBKDF2_HASH_CHOICES = ("sha256", "sha512", "sha3_256", "sha3_512")
+
 @app.command()
 def derive_key(
     password: Optional[str] = typer.Option(
@@ -453,6 +560,14 @@ def derive_key(
     prompt_password: bool = typer.Option(False, "--prompt-password", help="Interactively prompt for a password."),
     use_pbkdf2: bool = typer.Option(False, "--pbkdf2", help="Use PBKDF2 instead of Argon2id."),
     salt_hex: Optional[str] = typer.Option(None, "--salt", help="Existing salt (hex) for re-derivation."),
+    hash_algo: str = typer.Option(
+        "sha256",
+        "--hash-algo",
+        help=(
+            f"PBKDF2 hash algorithm (ignored for Argon2id). "
+            f"Choices: {_PBKDF2_HASH_CHOICES}."
+        ),
+    ),
 ) -> None:
     """Derive an AES-256 key from a password using Argon2id or PBKDF2."""
     try:
@@ -461,14 +576,23 @@ def derive_key(
         if not password:
             output.error("Provide --password or --prompt-password.")
             raise typer.Exit(1)
+
         salt = _parse_hex(salt_hex, "--salt") if salt_hex else None
+
         if use_pbkdf2:
-            derived = kdf.derive_key_pbkdf2(password, salt=salt)
-            algo = "PBKDF2-HMAC-SHA256"
+            if hash_algo not in _PBKDF2_HASH_CHOICES:
+                output.error(
+                    f"Invalid --hash-algo {hash_algo!r}. "
+                    f"Choose from: {_PBKDF2_HASH_CHOICES}."
+                )
+                raise typer.Exit(1)
+            derived = kdf.derive_key_pbkdf2(password, salt=salt, hash_algorithm=hash_algo)
+            algo_label = f"PBKDF2-HMAC-{hash_algo.upper()}"
         else:
             derived = kdf.derive_key_argon2(password, salt=salt)
-            algo = "Argon2id"
-        output.result(f"Derived Key ({algo})", derived.key.hex())
+            algo_label = "Argon2id"
+
+        output.result(f"Derived Key ({algo_label})", derived.key.hex())
         output.result("Salt (save this for re-derivation)", derived.salt.hex())
     except CryptoToolkitError as exc:
         _handle_error(exc)
