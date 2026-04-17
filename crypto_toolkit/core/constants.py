@@ -28,6 +28,8 @@ ARGON2_MEMORY_COST = 65536 # 64 MiB
 ARGON2_PARALLELISM = 4
 ARGON2_HASH_LEN = 32       # key output length (bytes)
 ARGON2_SALT_LEN = 16       # random salt (bytes)
+ARGON2_PARAMS_STRUCT = ">IIH"   # struct.pack format string
+ARGON2_PARAMS_LEN = 10          # total packed length in bytes
 
 # ── PBKDF2 (fallback) ────────────────────────────────────────────────────────
 
@@ -58,3 +60,4 @@ ENVELOPE_VERSION = b"\x01"       # one-byte tag added to all envelopes
 SYMMETRIC_MAGIC = b"CTK-SYM"
 FILE_ENC_MAGIC = b"CTK-FILE"
 ASYM_MAGIC = b"CTK-ASYM"
+PBE_MAGIC = b"CTK-PBE"
