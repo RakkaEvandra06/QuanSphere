@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
     ECDH,
     SECP256R1,
-    from_encoded_point as ec_from_encoded_point,
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -202,7 +201,7 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         nonce = envelope[_ECC_UNCOMPRESSED_PUB_LEN : _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE]
         ciphertext = envelope[_ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE :]
 
-        ephemeral_pub = ec_from_encoded_point(SECP256R1(), ephemeral_pub_bytes)
+        ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(SECP256R1(), ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
         aes_key = HKDF(
