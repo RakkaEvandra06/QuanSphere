@@ -7,15 +7,20 @@ import struct
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from crypto_toolkit.core.constants import (
+    ARGON2_MEMORY_COST,
+    ARGON2_PARALLELISM,
+    ARGON2_PARAMS_LEN,
+    ARGON2_PARAMS_STRUCT,
+    ARGON2_TIME_COST,
     AES_NONCE_SIZE,
     ENVELOPE_VERSION,
+    PBE_MAGIC as _PBE_MAGIC,
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
 from crypto_toolkit.core.exceptions import CryptoToolkitError, DecryptionError, EncryptionError
 from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
 
-_PBE_MAGIC = b"CTK-PBE"
 _KDF_ARGON2 = b"\x01"
 _KDF_PBKDF2 = b"\x02"
 _SALT_LEN = 16
@@ -23,12 +28,13 @@ _SALT_LEN = 16
 # ── Minimum envelope length constants ─────────────────────────────────────────
 
 # Argon2 envelope layout:
-#   magic (7) + version (1) + kdf_tag (1) + salt (16) + nonce (12) + ciphertext (≥1)
+#   magic (7) + version (1) + kdf_tag (1) + salt (16)
+#   + argon2_params (10) + nonce (12) + ciphertext (≥1)
 _ARGON2_MIN_ENVELOPE: int = (
-    len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + AES_NONCE_SIZE + 1
+    len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + ARGON2_PARAMS_LEN + AES_NONCE_SIZE + 1
 )
 
-# PBKDF2 envelope layout:
+# PBKDF2 envelope layout (unchanged):
 #   magic (7) + version (1) + kdf_tag (1) + salt (16) + hash_tag (1)
 #   + iterations (4) + nonce (12) + ciphertext (≥1)
 _PBKDF2_ITERATIONS_FIELD_LEN = 4
@@ -37,9 +43,11 @@ _PBKDF2_MIN_ENVELOPE: int = (
     + AES_NONCE_SIZE + 1
 )
 
-def _build_aad_argon2(salt: bytes) -> bytes:
+# ── AAD builders ──────────────────────────────────────────────────────────────
+
+def _build_aad_argon2(salt: bytes, argon2_params: bytes) -> bytes:
     """Return the AAD for an Argon2 envelope (everything before the nonce)."""
-    return _PBE_MAGIC + ENVELOPE_VERSION + _KDF_ARGON2 + salt
+    return _PBE_MAGIC + ENVELOPE_VERSION + _KDF_ARGON2 + salt + argon2_params
 
 def _build_aad_pbkdf2(salt: bytes, hash_tag: bytes, iterations: int) -> bytes:
     """Return the AAD for a PBKDF2 envelope (everything before the nonce)."""
@@ -51,6 +59,8 @@ def _build_aad_pbkdf2(salt: bytes, hash_tag: bytes, iterations: int) -> bytes:
         + hash_tag
         + struct.pack(">I", iterations)
     )
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def password_encrypt(
     plaintext: bytes,
@@ -65,16 +75,24 @@ def password_encrypt(
         if use_argon2:
             derived = derive_key_argon2(password)
             kdf_tag = _KDF_ARGON2
-            aad = _build_aad_argon2(derived.salt)
+            argon2_params = struct.pack(
+                ARGON2_PARAMS_STRUCT,
+                ARGON2_TIME_COST,
+                ARGON2_MEMORY_COST,
+                ARGON2_PARALLELISM,
+            )
+            aad = _build_aad_argon2(derived.salt, argon2_params)
             ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
             envelope = (
                 _PBE_MAGIC
                 + ENVELOPE_VERSION
                 + kdf_tag
                 + derived.salt
+                + argon2_params   # 10 bytes: time_cost(4) + memory_cost(4) + parallelism(2)
                 + nonce
                 + ciphertext
             )
+
         else:
             derived = derive_key_pbkdf2(password)
             kdf_tag = _KDF_PBKDF2
@@ -141,11 +159,24 @@ def password_decrypt(token: str, password: str) -> bytes:
         offset += _SALT_LEN
 
         if kdf_tag == _KDF_ARGON2:
+            argon2_params_raw = raw[offset : offset + ARGON2_PARAMS_LEN]
+            offset += ARGON2_PARAMS_LEN
+            time_cost, memory_cost, parallelism = struct.unpack(
+                ARGON2_PARAMS_STRUCT, argon2_params_raw
+            )
+
             nonce      = raw[offset : offset + AES_NONCE_SIZE]
             offset    += AES_NONCE_SIZE
             ciphertext = raw[offset:]
-            derived    = derive_key_argon2(password, salt=salt)
-            aad = _build_aad_argon2(salt)
+
+            derived = derive_key_argon2(
+                password,
+                salt=salt,
+                time_cost=time_cost,
+                memory_cost=memory_cost,
+                parallelism=parallelism,
+            )
+            aad = _build_aad_argon2(salt, argon2_params_raw)
 
         elif kdf_tag == _KDF_PBKDF2:
             hash_tag_byte = raw[offset : offset + 1]
@@ -161,7 +192,8 @@ def password_decrypt(token: str, password: str) -> bytes:
             nonce      = raw[offset : offset + AES_NONCE_SIZE]
             offset    += AES_NONCE_SIZE
             ciphertext = raw[offset:]
-            derived    = derive_key_pbkdf2(
+
+            derived = derive_key_pbkdf2(
                 password,
                 salt=salt,
                 iterations=pbkdf2_iterations,
