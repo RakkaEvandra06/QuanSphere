@@ -38,16 +38,24 @@ def encrypt(
     try:
         if algorithm == "aes-gcm":
             _validate_key(key, AES_KEY_SIZE)
+            algo_tag = b"\x01"
             nonce = secrets.token_bytes(AES_NONCE_SIZE)
-            ciphertext = AESGCM(key).encrypt(nonce, plaintext, associated_data)
         elif algorithm == "chacha20":
             _validate_key(key, CHACHA_KEY_SIZE)
+            algo_tag = b"\x02"
             nonce = secrets.token_bytes(CHACHA_NONCE_SIZE)
-            ciphertext = ChaCha20Poly1305(key).encrypt(nonce, plaintext, associated_data)
         else:
             raise InputValidationError(f"Unknown algorithm: {algorithm!r}")
-        algo_tag = b"\x01" if algorithm == "aes-gcm" else b"\x02"
-        envelope = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag + nonce + ciphertext
+
+        header = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag
+        aad_internal = header + (b"" if associated_data is None else associated_data)
+
+        if algorithm == "aes-gcm":
+            ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad_internal)
+        else:
+            ciphertext = ChaCha20Poly1305(key).encrypt(nonce, plaintext, aad_internal)
+
+        envelope = header + nonce + ciphertext
         return base64.urlsafe_b64encode(envelope).decode()
     except InputValidationError:
         raise
@@ -69,6 +77,8 @@ def decrypt(
             raise DecryptionError("The envelope version is not supported.")
         algo_tag = raw[magic_len + 1 : magic_len + 2]
         payload = raw[magic_len + 2 :]
+        header = raw[: magic_len + 2]   # magic + version byte + algo_tag byte
+        aad_internal = header + (b"" if associated_data is None else associated_data)
 
         if algo_tag == b"\x01":
             _validate_key(key, AES_KEY_SIZE)
@@ -79,7 +89,7 @@ def decrypt(
                     f"The token is likely truncated or corrupted."
                 )
             nonce, ciphertext = payload[:AES_NONCE_SIZE], payload[AES_NONCE_SIZE:]
-            return _aead_decrypt(AESGCM(key), nonce, ciphertext, associated_data)
+            return _aead_decrypt(AESGCM(key), nonce, ciphertext, aad_internal)
 
         elif algo_tag == b"\x02":
             _validate_key(key, CHACHA_KEY_SIZE)
@@ -90,7 +100,7 @@ def decrypt(
                     f"The token is likely truncated or corrupted."
                 )
             nonce, ciphertext = payload[:CHACHA_NONCE_SIZE], payload[CHACHA_NONCE_SIZE:]
-            return _aead_decrypt(ChaCha20Poly1305(key), nonce, ciphertext, associated_data)
+            return _aead_decrypt(ChaCha20Poly1305(key), nonce, ciphertext, aad_internal)
 
         else:
             raise DecryptionError("An unknown algorithm tag is found inside the envelope.")
