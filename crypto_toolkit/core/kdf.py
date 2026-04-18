@@ -26,6 +26,13 @@ _PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
     "sha3_512": hashes.SHA3_512,
 }
 
+_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
+    "sha256":   600_000,
+    "sha512":   210_000,
+    "sha3_256": 600_000,
+    "sha3_512": 210_000,
+}
+
 class DerivedKey(NamedTuple):
     key: bytes
     salt: bytes
@@ -44,7 +51,12 @@ def derive_key_argon2(
     if time_cost < 1:
         raise InputValidationError("Argon2 time_cost must be >= 1.")
     if memory_cost < 8192:
-        raise InputValidationError("Argon2 memory_cost must be >= 8192 KiB (8 MiB).")
+        raise InputValidationError(
+            f"Argon2 memory_cost must be >= 8192 KiB (8 MiB); "
+            f"received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
+            f"Note: memory_cost is expressed in KiB, not MiB — "
+            f"pass 65536 for 64 MiB (the recommended default)."
+        )
     if hash_len < 16:
         raise InputValidationError("Argon2 hash_len must be >= 16 bytes.")
 
@@ -85,10 +97,12 @@ def derive_key_pbkdf2(
     key_len: int = PBKDF2_KEY_LEN,
     hash_algorithm: str = PBKDF2_HASH,
 ) -> DerivedKey:
-    if iterations < 100_000:
+    min_iters = _PBKDF2_MIN_ITERATIONS.get(hash_algorithm, 600_000)
+    if iterations < min_iters:
         raise InputValidationError(
-            "PBKDF2 iterations must be >= 100,000. "
-            "OWASP recommends >= 600,000 for HMAC-SHA256."
+            f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
+            f"(OWASP 2023 recommendation). "
+            f"Received: {iterations:,}."
         )
 
     algo_cls = _PBKDF2_HASH_FACTORIES.get(hash_algorithm)
