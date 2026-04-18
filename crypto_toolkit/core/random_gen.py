@@ -13,7 +13,6 @@ from crypto_toolkit.core.exceptions import InputValidationError
 _MIN_PASSWORD_ENTROPY_BITS = 60
 
 def generate_key(size: int = AES_KEY_SIZE) -> bytes:
-
     if size <= 0:
         raise InputValidationError("Key size must be a positive integer.")
     return secrets.token_bytes(size)
@@ -46,7 +45,30 @@ def generate_password(
     if use_symbols:
         alphabet += "!@#$%^&*()-_=+"
 
-    entropy_bits = length * math.log2(len(alphabet))
+    # Count how many category-constrained slots are required.
+    num_required: int = 1  # lowercase is always required
+    if use_uppercase:
+        num_required += 1
+    if use_digits:
+        num_required += 1
+    if use_symbols:
+        num_required += 1
+
+    sub_alphabet_sizes: list[int] = [len(string.ascii_lowercase)]
+    if use_uppercase:
+        sub_alphabet_sizes.append(len(string.ascii_uppercase))
+    if use_digits:
+        sub_alphabet_sizes.append(len(string.digits))
+    if use_symbols:
+        sub_alphabet_sizes.append(len("!@#$%^&*()-_=+"))
+
+    free_positions: int = length - num_required
+
+    entropy_bits: float = (
+        free_positions * math.log2(len(alphabet))
+        + sum(math.log2(s) for s in sub_alphabet_sizes)
+    )
+
     if entropy_bits < _MIN_PASSWORD_ENTROPY_BITS:
         raise InputValidationError(
             f"The requested password has insufficient entropy "
