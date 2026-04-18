@@ -7,6 +7,7 @@ import struct
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from crypto_toolkit.core.constants import (
+    AEAD_MIN_CIPHERTEXT,
     ARGON2_MEMORY_COST,
     ARGON2_PARALLELISM,
     ARGON2_PARAMS_LEN,
@@ -27,20 +28,23 @@ _SALT_LEN = 16
 
 # ── Minimum envelope length constants ─────────────────────────────────────────
 
+_HEADER_PREFIX_LEN: int = len(_PBE_MAGIC) + 1 + 1   # 9 bytes
+
 # Argon2 envelope layout:
 #   magic (7) + version (1) + kdf_tag (1) + salt (16)
-#   + argon2_params (10) + nonce (12) + ciphertext (≥1)
+#   + argon2_params (10) + nonce (12) + ciphertext (≥17)
 _ARGON2_MIN_ENVELOPE: int = (
-    len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + ARGON2_PARAMS_LEN + AES_NONCE_SIZE + 1
+    len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + ARGON2_PARAMS_LEN + AES_NONCE_SIZE
+    + AEAD_MIN_CIPHERTEXT
 )
 
-# PBKDF2 envelope layout (unchanged):
+# PBKDF2 envelope layout:
 #   magic (7) + version (1) + kdf_tag (1) + salt (16) + hash_tag (1)
-#   + iterations (4) + nonce (12) + ciphertext (≥1)
+#   + iterations (4) + nonce (12) + ciphertext (≥17)
 _PBKDF2_ITERATIONS_FIELD_LEN = 4
 _PBKDF2_MIN_ENVELOPE: int = (
     len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + 1 + _PBKDF2_ITERATIONS_FIELD_LEN
-    + AES_NONCE_SIZE + 1
+    + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
 )
 
 # ── AAD builders ──────────────────────────────────────────────────────────────
@@ -96,14 +100,22 @@ def password_encrypt(
         else:
             derived = derive_key_pbkdf2(password)
             kdf_tag = _KDF_PBKDF2
-            hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash or "")
+
+            if derived.pbkdf2_iterations is None or derived.pbkdf2_hash is None:
+                raise EncryptionError(
+                    "derive_key_pbkdf2 returned incomplete metadata "
+                    "(pbkdf2_iterations or pbkdf2_hash is None) — "
+                    "cannot construct a valid PBKDF2 envelope."
+                )
+
+            hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash)
             if hash_tag is None:
                 raise EncryptionError(
                     f"Cannot encode PBKDF2 hash {derived.pbkdf2_hash!r} into envelope."
                 )
-            iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations or 0)
+            iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations)
             aad = _build_aad_pbkdf2(
-                derived.salt, hash_tag, derived.pbkdf2_iterations or 0
+                derived.salt, hash_tag, derived.pbkdf2_iterations
             )
             ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
             envelope = (
@@ -129,6 +141,13 @@ def password_decrypt(token: str, password: str) -> bytes:
         raw = base64.urlsafe_b64decode(token.encode())
         magic_len = len(_PBE_MAGIC)
 
+        if len(raw) < _HEADER_PREFIX_LEN:
+            raise DecryptionError(
+                f"Token is too short to be a valid envelope "
+                f"({len(raw)} bytes; minimum header prefix is {_HEADER_PREFIX_LEN} bytes). "
+                f"The token is likely truncated or corrupted."
+            )
+
         if raw[:magic_len] != _PBE_MAGIC:
             raise DecryptionError("Envelope format not recognized.")
         if raw[magic_len : magic_len + 1] != ENVELOPE_VERSION:
@@ -138,22 +157,17 @@ def password_decrypt(token: str, password: str) -> bytes:
         # Cursor advances past magic + version byte + kdf_tag byte.
         offset = magic_len + 2
 
-        if kdf_tag == _KDF_ARGON2:
-            if len(raw) < _ARGON2_MIN_ENVELOPE:
-                raise DecryptionError(
-                    f"Argon2 envelope is too short ({len(raw)} bytes — "
-                    f"minimum expected is {_ARGON2_MIN_ENVELOPE}). "
-                    f"The token is likely truncated or corrupted."
-                )
-        elif kdf_tag == _KDF_PBKDF2:
-            if len(raw) < _PBKDF2_MIN_ENVELOPE:
-                raise DecryptionError(
-                    f"PBKDF2 envelope is too short ({len(raw)} bytes — "
-                    f"minimum expected is {_PBKDF2_MIN_ENVELOPE}). "
-                    f"The token is likely truncated or corrupted."
-                )
-        else:
+        if kdf_tag not in (_KDF_ARGON2, _KDF_PBKDF2):
             raise DecryptionError("Unrecognized KDF tag inside envelope.")
+
+        min_len = _ARGON2_MIN_ENVELOPE if kdf_tag == _KDF_ARGON2 else _PBKDF2_MIN_ENVELOPE
+        kdf_name = "Argon2" if kdf_tag == _KDF_ARGON2 else "PBKDF2"
+        if len(raw) < min_len:
+            raise DecryptionError(
+                f"{kdf_name} envelope is too short ({len(raw)} bytes — "
+                f"minimum expected is {min_len}). "
+                f"The token is likely truncated or corrupted."
+            )
 
         salt = raw[offset : offset + _SALT_LEN]
         offset += _SALT_LEN
@@ -178,7 +192,7 @@ def password_decrypt(token: str, password: str) -> bytes:
             )
             aad = _build_aad_argon2(salt, argon2_params_raw)
 
-        elif kdf_tag == _KDF_PBKDF2:
+        else:  # kdf_tag == _KDF_PBKDF2
             hash_tag_byte = raw[offset : offset + 1]
             pbkdf2_hash   = _PBKDF2_TAG_TO_HASH.get(hash_tag_byte)
             if pbkdf2_hash is None:
@@ -200,9 +214,6 @@ def password_decrypt(token: str, password: str) -> bytes:
                 hash_algorithm=pbkdf2_hash,
             )
             aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
-
-        else:
-            raise DecryptionError("Unrecognized KDF tag inside envelope.")
 
         return AESGCM(derived.key).decrypt(nonce, ciphertext, aad)
     except CryptoToolkitError:
