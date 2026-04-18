@@ -39,14 +39,26 @@ def hash_stream(
     stream: BinaryIO,
     algorithm: str = DEFAULT_HASH,
     chunk_size: int = FILE_CHUNK_SIZE,
+    *,
+    seek_to_start: bool = False,
 ) -> str:
-    """Hash *stream* from its **current position** and return the hex digest."""
+    """Hash *stream* and return the hex digest."""
     try:
+        if seek_to_start:
+            if not stream.seekable():
+                raise HashingError(
+                    "seek_to_start=True was requested, but the provided stream "
+                    "is not seekable (e.g. a pipe, socket, or stdin). "
+                    "Either pass a seekable stream or set seek_to_start=False."
+                )
+            stream.seek(0)
         h = _get_hash_obj(algorithm)
         while chunk := stream.read(chunk_size):
             h.update(chunk)
         return h.hexdigest()
     except InputValidationError:
+        raise
+    except HashingError:
         raise
     except Exception as exc:
         raise HashingError("Stream hashing failed.") from exc
