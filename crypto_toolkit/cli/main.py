@@ -32,6 +32,8 @@ app = typer.Typer(
 )
 console = Console()
 
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
 def _handle_error(exc: Exception) -> None:
     """Translate a toolkit error into a user-friendly CLI message, then exit."""
     if isinstance(exc, CryptoToolkitError):
@@ -78,7 +80,13 @@ def _write_output(data: str | bytes, output_file: Optional[Path], label: str) ->
 
     if output_file:
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_bytes(raw)
+        tmp = output_file.with_suffix(output_file.suffix + ".tmp")
+        try:
+            tmp.write_bytes(raw)
+            tmp.replace(output_file)        # atomic on POSIX; best-effort on Windows
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         output.success(f"Output written to: {output_file}")
         return  # Done — no terminal display needed.
 
@@ -177,15 +185,11 @@ def decrypt(
         else:
             output.error("Provide a token argument or use --stdin.")
             raise typer.Exit(1)
+
         if prompt_password:
             password = typer.prompt("Password", hide_input=True)
+
         if password:
-            if algorithm != SymAlgo.aes_gcm:
-                output.warn(
-                    f"[bold]--algo {algorithm.value}[/bold] is ignored for password-based "
-                    "decryption — the algorithm is embedded in the token envelope and "
-                    "is detected automatically."
-                )
             plaintext = pbe.password_decrypt(raw_token, password)
         elif key_hex:
             key = _parse_hex(key_hex, "--key")
@@ -193,6 +197,7 @@ def decrypt(
         else:
             output.error("Provide --key or --password.")
             raise typer.Exit(1)
+
         _write_output(plaintext, output_file, "Decrypted")
     except CryptoToolkitError as exc:
         _handle_error(exc)
@@ -636,8 +641,15 @@ def random_cmd(
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _write_file(path: Path, data: bytes) -> None:
+    """Write *data* to *path* atomically via a sibling temp file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(path)          # atomic on POSIX; best-effort on Windows
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     output.info(f"Written: {path}")
 
 if __name__ == "__main__":
