@@ -1,3 +1,24 @@
+__all__ = [
+    # Key generation
+    "generate_rsa_keypair",
+    "generate_ecc_keypair",
+    "generate_x25519_keypair",
+    # Serialisation
+    "private_key_to_pem",
+    "public_key_to_pem",
+    "load_private_key",
+    "load_public_key",
+    # RSA encryption
+    "rsa_encrypt",
+    "rsa_decrypt",
+    # ECC hybrid encryption
+    "ecc_hybrid_encrypt",
+    "ecc_hybrid_decrypt",
+    # X25519 hybrid encryption
+    "x25519_hybrid_encrypt",
+    "x25519_hybrid_decrypt",
+]
+
 from __future__ import annotations
 
 import secrets
@@ -9,12 +30,13 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
     ECDH,
-    SECP256R1,
+
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from crypto_toolkit.core.constants import (
+    AEAD_MIN_CIPHERTEXT,
     AES_KEY_SIZE,
     AES_NONCE_SIZE,
     RSA_KEY_SIZE,
@@ -33,6 +55,16 @@ _UNCOMPRESSED_POINT_PREFIX = 0x04
 _ECC_UNCOMPRESSED_PUB_LEN: int = 65
 # X25519 raw public key is always 32 bytes (RFC 7748 §6.1).
 _X25519_PUB_LEN: int = 32
+
+# ── Module-level envelope minimum lengths ────────────────────────────────────
+
+_ECC_MIN_ENVELOPE: int    = _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
+_X25519_MIN_ENVELOPE: int = _X25519_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
+
+# ── HKDF domain separators ───────────────────────────────────────────────────
+
+_ECC_HKDF_INFO:    bytes = b"crypto-toolkit-ecc-hybrid"
+_X25519_HKDF_INFO: bytes = b"crypto-toolkit-x25519-hybrid"
 
 # ── RSA Key management ────────────────────────────────────────────────────────
 
@@ -144,7 +176,7 @@ def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
 # ── ECC Hybrid Encryption ─────────────────────────────────────────────────────
 
 def _assert_secp256r1(key: EllipticCurvePublicKey | EllipticCurvePrivateKey, operation: str) -> None:
-    if not isinstance(key.curve, SECP256R1):
+    if not isinstance(key.curve, ec.SECP256R1):
         raise InputValidationError(
             f"ECC {operation} requires a SECP256R1 key; "
             f"received {type(key.curve).__name__}."
@@ -166,7 +198,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=b"crypto-toolkit-ecc-hybrid-v4",
+            info=_ECC_HKDF_INFO,
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -180,8 +212,6 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
 
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
     _assert_secp256r1(private_key, "hybrid decryption")
-    # Use the module-level constant so encrypt and decrypt always agree on the key length.
-    _ECC_MIN_ENVELOPE = _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + 1
     if len(envelope) < _ECC_MIN_ENVELOPE:
         raise DecryptionError(
             f"ECC envelope is too short ({len(envelope)} bytes); "
@@ -201,14 +231,14 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         nonce = envelope[_ECC_UNCOMPRESSED_PUB_LEN : _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE]
         ciphertext = envelope[_ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE :]
 
-        ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(SECP256R1(), ephemeral_pub_bytes)
+        ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=b"crypto-toolkit-ecc-hybrid-v4",
+            info=_ECC_HKDF_INFO,
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
@@ -237,7 +267,7 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=b"crypto-toolkit-x25519-hybrid-v4",
+            info=_X25519_HKDF_INFO,
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -248,8 +278,6 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
 
 def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey) -> bytes:
-    # Use the module-level constant so encrypt and decrypt always agree on the key length.
-    _X25519_MIN_ENVELOPE = _X25519_PUB_LEN + AES_NONCE_SIZE + 1
     if len(envelope) < _X25519_MIN_ENVELOPE:
         raise DecryptionError(
             f"X25519 envelope is too short ({len(envelope)} bytes); "
@@ -268,7 +296,7 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=b"crypto-toolkit-x25519-hybrid-v4",
+            info=_X25519_HKDF_INFO,
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
