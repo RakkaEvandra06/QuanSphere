@@ -1,3 +1,5 @@
+__all__ = ["password_encrypt", "password_decrypt"]
+
 from __future__ import annotations
 
 import base64
@@ -77,14 +79,19 @@ def password_encrypt(
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
 
         if use_argon2:
-            derived = derive_key_argon2(password)
-            kdf_tag = _KDF_ARGON2
             argon2_params = struct.pack(
                 ARGON2_PARAMS_STRUCT,
                 ARGON2_TIME_COST,
                 ARGON2_MEMORY_COST,
                 ARGON2_PARALLELISM,
             )
+            derived = derive_key_argon2(
+                password,
+                time_cost=ARGON2_TIME_COST,
+                memory_cost=ARGON2_MEMORY_COST,
+                parallelism=ARGON2_PARALLELISM,
+            )
+            kdf_tag = _KDF_ARGON2
             aad = _build_aad_argon2(derived.salt, argon2_params)
             ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
             envelope = (
