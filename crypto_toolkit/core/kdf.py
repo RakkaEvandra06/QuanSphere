@@ -1,3 +1,10 @@
+__all__ = [
+    "DerivedKey",
+    "derive_key_argon2",
+    "derive_key_pbkdf2",
+    "PBKDF2_SUPPORTED_HASHES",
+]
+
 from __future__ import annotations
 
 import secrets
@@ -26,11 +33,13 @@ _PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
     "sha3_512": hashes.SHA3_512,
 }
 
+PBKDF2_SUPPORTED_HASHES: frozenset[str] = frozenset(_PBKDF2_HASH_FACTORIES)
+
 _PBKDF2_MIN_ITERATIONS: dict[str, int] = {
-    "sha256":   600_000,
-    "sha512":   210_000,
-    "sha3_256": 600_000,
-    "sha3_512": 210_000,
+    "sha256":   600_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
+    "sha512":   210_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
+    "sha3_256": 200_000,   # SHA3-256 is ~3× slower than SHA-256 per iteration
+    "sha3_512": 100_000,   # SHA3-512 is ~2× slower than SHA-512 per iteration
 }
 
 class DerivedKey(NamedTuple):
@@ -97,6 +106,7 @@ def derive_key_pbkdf2(
     key_len: int = PBKDF2_KEY_LEN,
     hash_algorithm: str = PBKDF2_HASH,
 ) -> DerivedKey:
+
     min_iters = _PBKDF2_MIN_ITERATIONS.get(hash_algorithm, 600_000)
     if iterations < min_iters:
         raise InputValidationError(
