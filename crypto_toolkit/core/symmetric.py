@@ -1,7 +1,10 @@
+__all__ = ["Algorithm", "encrypt", "decrypt"]
+
 from __future__ import annotations
 
 import base64
 import secrets
+import warnings
 from typing import Literal
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
@@ -19,14 +22,31 @@ from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, Inp
 
 Algorithm = Literal["aes-gcm", "chacha20"]
 
-_AES_MIN_PAYLOAD   = AES_NONCE_SIZE + AES_TAG_SIZE + 1   # 29 bytes
-_CHACHA_MIN_PAYLOAD = CHACHA_NONCE_SIZE + 16 + 1         # 29 bytes (Poly1305 tag = 16)
+_AES_MIN_PAYLOAD    = AES_NONCE_SIZE + AES_TAG_SIZE + 1   # 29 bytes
+_CHACHA_MIN_PAYLOAD = CHACHA_NONCE_SIZE + 16 + 1          # 29 bytes (Poly1305 tag = 16)
 
 def _validate_key(key: bytes, expected_size: int) -> None:
     if len(key) != expected_size:
         raise InputValidationError(
             f"Key must be exactly {expected_size} bytes; received {len(key)}."
         )
+
+def _build_aad(header: bytes, associated_data: bytes | None) -> bytes:
+    """Construct the internal AAD from the envelope header and caller-supplied data."""
+    if associated_data is not None and len(associated_data) == 0:
+        warnings.warn(
+            "associated_data=b'' is equivalent to None (no AAD is applied). "
+            "Pass None explicitly to suppress this warning, or supply a "
+            "non-empty binding context (e.g. b'user:alice').",
+            DeprecationWarning,
+            stacklevel=3,   # surfaces at the encrypt/decrypt call site
+        )
+        associated_data = None
+
+    if associated_data is None:
+        return header
+
+    return header + associated_data
 
 def encrypt(
     plaintext: bytes,
@@ -35,6 +55,7 @@ def encrypt(
     algorithm: Algorithm = "aes-gcm",
     associated_data: bytes | None = None,
 ) -> str:
+    """Encrypt *plaintext* and return a URL-safe base64 token."""
     try:
         if algorithm == "aes-gcm":
             _validate_key(key, AES_KEY_SIZE)
@@ -47,8 +68,8 @@ def encrypt(
         else:
             raise InputValidationError(f"Unknown algorithm: {algorithm!r}")
 
-        header = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag
-        aad_internal = header + (b"" if associated_data is None else associated_data)
+        header       = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag
+        aad_internal = _build_aad(header, associated_data)
 
         if algorithm == "aes-gcm":
             ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad_internal)
@@ -68,6 +89,7 @@ def decrypt(
     *,
     associated_data: bytes | None = None,
 ) -> bytes:
+    """Decrypt a token produced by :func:`encrypt`."""
     try:
         raw = base64.urlsafe_b64decode(token.encode())
         magic_len = len(SYMMETRIC_MAGIC)
@@ -76,9 +98,9 @@ def decrypt(
         if raw[magic_len : magic_len + 1] != ENVELOPE_VERSION:
             raise DecryptionError("The envelope version is not supported.")
         algo_tag = raw[magic_len + 1 : magic_len + 2]
-        payload = raw[magic_len + 2 :]
-        header = raw[: magic_len + 2]   # magic + version byte + algo_tag byte
-        aad_internal = header + (b"" if associated_data is None else associated_data)
+        payload  = raw[magic_len + 2 :]
+        header   = raw[: magic_len + 2]   # magic + version byte + algo_tag byte
+        aad_internal = _build_aad(header, associated_data)
 
         if algo_tag == b"\x01":
             _validate_key(key, AES_KEY_SIZE)
