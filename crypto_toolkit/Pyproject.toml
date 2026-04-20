@@ -1,0 +1,178 @@
+[build-system]
+requires      = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+# ── Project metadata ──────────────────────────────────────────────────────────
+
+[project]
+name        = "crypto-toolkit"
+version     = "4.0.0"
+description = "Hardened Crypto Toolkit — secure cryptographic operations CLI."
+readme      = "README.md"
+license     = { text = "MIT" }
+requires-python = ">=3.10"
+# Python 3.10 is the minimum because the codebase uses PEP 604 union-type
+# syntax (`str | bytes`, `X | None`) in function signatures and variable
+# annotations throughout.  Python 3.9 only supports this syntax inside
+# `from __future__ import annotations` blocks; 3.10 makes it universal.
+
+keywords = [
+    "cryptography", "encryption", "hashing", "cli",
+    "aes-gcm", "chacha20", "argon2", "ed25519",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+
+# ── Runtime dependencies ──────────────────────────────────────────────────────
+
+dependencies = [
+    # ── cryptography ──────────────────────────────────────────────────────────
+    # Provides every primitive used in the toolkit: AES-GCM, ChaCha20-Poly1305,
+    # RSA-OAEP, ECDH (P-256), X25519, Ed25519, RSA-PSS, HKDF, PBKDF2-HMAC.
+    #
+    # Minimum 42.0.0 — reasons:
+    #   • 42.0 deprecated and removed several legacy OpenSSL 1.1 shims; code
+    #     targeting 42+ will not accidentally work against an older OpenSSL.
+    #   • EllipticCurvePublicKey.from_encoded_point() (used in ecc_hybrid_decrypt)
+    #     has been stable since 2.5 but its type stubs were aligned in 42.
+    #   • X25519PublicKey.from_public_bytes() stable since 2.6; confirmed in 42.
+    #
+    # Upper cap <47.0.0 — a future major release may remove or rename APIs;
+    # widen only after running the full test suite against the candidate version.
+    "cryptography >= 42.0.0, < 47.0.0",
+
+    # ── argon2-cffi ───────────────────────────────────────────────────────────
+    # Provides the Argon2id low-level binding (argon2.low_level.hash_secret_raw,
+    # argon2.low_level.Type).  The high-level PasswordHasher is intentionally not
+    # used — the toolkit controls salt generation, iteration parameters, and
+    # output length directly through the low-level API.
+    #
+    # Minimum 23.1.0 — the last release that unified argon2-cffi and
+    # argon2-cffi-bindings into a single package (previously two separate
+    # packages were needed); ensures a single consistent install on all platforms.
+    #
+    # Upper cap <25.0.0 — conservative; the low-level API has been stable since
+    # 21.x but a future major might rename Type.ID.
+    "argon2-cffi >= 23.1.0, < 25.0.0",
+
+    # ── rich ──────────────────────────────────────────────────────────────────
+    # Used exclusively in output.py for Console, Panel, and Text.  All three
+    # have been present since rich 10.x; 13.0 is used as the minimum because it
+    # introduced the no_color environment-variable support (important for CI).
+    #
+    # Upper cap <15.0.0 — rich follows semantic versioning loosely; a major
+    # bump typically signals markup-language or API changes in Console/Panel.
+    "rich >= 13.0.0, < 15.0.0",
+
+    # ── typer ─────────────────────────────────────────────────────────────────
+    # Drives the CLI in main.py.  Uses Option(hide_input=True),
+    # confirmation_prompt, and no_args_is_help — all stable since 0.9.
+    #
+    # Minimum 0.9.0 — 0.9 was the first release to bundle Click 8.x as its only
+    # supported backend (earlier versions had optional Click 7 compatibility that
+    # caused subtle behavioural differences with hide_input prompts).
+    #
+    # Upper cap <1.0.0 — typer has not yet committed to a stable public API;
+    # 0.x minor bumps have occasionally broken prompt and Enum handling.  Pin
+    # to the current minor series and widen after verifying the next release.
+    "typer >= 0.9.0, < 1.0.0",
+]
+
+# ── Optional dependency groups ────────────────────────────────────────────────
+
+[project.optional-dependencies]
+
+# Install with: pip install "crypto-toolkit[dev]"
+# Installs all of test + lint in one shot for local development.
+dev = [
+    "crypto-toolkit[test,lint]",
+]
+
+# Install with: pip install "crypto-toolkit[test]"
+# Minimal set needed to run the test suite.
+test = [
+    # pytest is the test runner; 8.x introduced improved --tb=short output.
+    "pytest >= 8.0.0, < 9.0.0",
+    # pytest-cov integrates coverage.py with pytest; 5.x supports branch coverage.
+    "pytest-cov >= 5.0.0, < 6.0.0",
+    # hypothesis provides property-based testing; used for fuzz-style crypto input tests.
+    "hypothesis >= 6.100.0, < 7.0.0",
+]
+
+# Install with: pip install "crypto-toolkit[lint]"
+lint = [
+    # mypy provides static type-checking; 1.8+ correctly narrows PEP 604 unions
+    # at runtime which matches how the codebase uses `str | bytes` guards.
+    "mypy >= 1.8.0, < 2.0.0",
+    # cryptography ships type stubs; include to give mypy full inference over
+    # the hazmat API.
+    "cryptography[mypy]",
+    # ruff replaces flake8 + isort + pyupgrade in a single binary.
+    "ruff >= 0.4.0, < 1.0.0",
+]
+
+# ── Entry points ──────────────────────────────────────────────────────────────
+
+[project.scripts]
+crypto-toolkit = "crypto_toolkit.cli.main:app"
+
+# ── Tool configuration ────────────────────────────────────────────────────────
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+addopts      = "--tb=short -q"
+
+[tool.coverage.run]
+branch = true
+source = ["crypto_toolkit"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under   = 80
+
+[tool.mypy]
+python_version         = "3.10"
+strict                 = true
+warn_unused_ignores    = true
+warn_return_any        = true
+disallow_untyped_defs  = true
+# The cryptography hazmat layer uses abstract base classes that mypy cannot
+# always resolve through our union-type return signatures; the remaining
+# type: ignore comments in asymmetric.py are therefore intentional.
+
+[tool.ruff]
+target-version = "py310"
+line-length    = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "S",    # flake8-bandit (security)
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "S101",  # assert — we explicitly replaced asserts with RuntimeError guards;
+             # any remaining asserts are in test code where they are correct.
+]
