@@ -7,13 +7,13 @@
 ![Security Rating](https://img.shields.io/badge/Security%20Rating-A%2B-brightgreen)
 ![Encryption](https://img.shields.io/badge/Encryption-AES--256%20%7C%20RSA--4096-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![License](https://img.shields.io/github/license/RakkaEvandra06/QuanSphere)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 </div>
 
 ---
 
-# 🔐 Hardened Crypto Toolkit
+# CryptoToolkit — Hardened Crypto Toolkit
 
 ZeroTrace v4 is a hardened cryptography toolkit engineered for secure data encryption built in Python. It supports AES-GCM, KDF (Argon2id, PBKDF2-HMAC), RSA-OAEP, Hybrid Encryption, Digital Signature (RSA-PSS, Ed25519), and SHA hashing with enhanced security validation.
 
@@ -55,6 +55,7 @@ QuanSphere/
 │       ├── test_symmetric.py
 │       ├── __init__.py
 │       └── conftest.py
+├── LICENSE.txt
 ├── pyproject.toml
 └── README.md
 ```
