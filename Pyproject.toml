@@ -94,13 +94,13 @@ dependencies = [
 
 [project.optional-dependencies]
 
-# Install with: pip install "crypto-toolkit[dev]"
+# Install with: pip install "quansphere[dev]"
 # Installs all of test + lint in one shot for local development.
 dev = [
-    "crypto-toolkit[test,lint]",
+    "quansphere[test,lint]",
 ]
 
-# Install with: pip install "crypto-toolkit[test]"
+# Install with: pip install "quansphere[test]"
 # Minimal set needed to run the test suite.
 test = [
     # pytest is the test runner; 8.x introduced improved --tb=short output.
@@ -111,7 +111,7 @@ test = [
     "hypothesis >= 6.100.0, < 7.0.0",
 ]
 
-# Install with: pip install "crypto-toolkit[lint]"
+# Install with: pip install "quansphere[lint]"
 lint = [
     # mypy provides static type-checking; 1.8+ correctly narrows PEP 604 unions
     # at runtime which matches how the codebase uses `str | bytes` guards.
