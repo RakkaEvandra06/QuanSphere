@@ -30,7 +30,6 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
     ECDH,
-
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -65,15 +64,37 @@ _X25519_MIN_ENVELOPE: int = _X25519_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTE
 
 _ECC_HKDF_INFO:    bytes = b"crypto-toolkit-ecc-hybrid"
 _X25519_HKDF_INFO: bytes = b"crypto-toolkit-x25519-hybrid"
+_X25519_ZERO_SECRET: bytes = b"\x00" * 32
+
+# ── Supported key-type guards (used by load_private_key / load_public_key) ────
+
+_SUPPORTED_PRIVATE_KEY_TYPES: tuple[type, ...] = (
+    RSAPrivateKey,
+    EllipticCurvePrivateKey,
+    x25519.X25519PrivateKey,
+)
+
+_SUPPORTED_PUBLIC_KEY_TYPES: tuple[type, ...] = (
+    RSAPublicKey,
+    EllipticCurvePublicKey,
+    x25519.X25519PublicKey,
+)
 
 # ── RSA Key management ────────────────────────────────────────────────────────
+
+_VALID_RSA_KEY_SIZES: frozenset[int] = frozenset({2048, 3072, 4096})
 
 def generate_rsa_keypair(
     key_size: int = RSA_KEY_SIZE,
 ) -> tuple[RSAPrivateKey, RSAPublicKey]:
 
-    if key_size < 2048:
-        raise KeyGenerationError("RSA key size must be at least 2048 bits.")
+    if key_size not in _VALID_RSA_KEY_SIZES:
+        raise KeyGenerationError(
+            f"RSA key size must be one of {sorted(_VALID_RSA_KEY_SIZES)} bits; "
+            f"received {key_size}. "
+            "Non-standard sizes are not supported — they produce keys that most "
+            "PKI infrastructure will reject."
+        )
     try:
         private_key = rsa.generate_private_key(
             public_exponent=RSA_PUBLIC_EXPONENT,
@@ -130,18 +151,36 @@ def load_private_key(
 ) -> RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey:
     """Load an RSA, ECC, or X25519 private key from PEM bytes."""
     try:
-        return serialization.load_pem_private_key(pem, password=password)  # type: ignore[return-value]
+        key = serialization.load_pem_private_key(pem, password=password)
     except Exception as exc:
-        raise InputValidationError("Failed to load private key — wrong password or corrupt PEM.") from exc
+        raise InputValidationError(
+            "Failed to load private key — wrong password or corrupt PEM."
+        ) from exc
+
+    if not isinstance(key, _SUPPORTED_PRIVATE_KEY_TYPES):
+        raise InputValidationError(
+            f"PEM contains an unsupported private key type: {type(key).__name__}. "
+            "Expected one of: RSA, ECC (SECP256R1), or X25519."
+        )
+    return key  # type: ignore[return-value]
 
 def load_public_key(
     pem: bytes,
 ) -> RSAPublicKey | EllipticCurvePublicKey | x25519.X25519PublicKey:
     """Load an RSA, ECC, or X25519 public key from PEM bytes."""
     try:
-        return serialization.load_pem_public_key(pem)  # type: ignore[return-value]
+        key = serialization.load_pem_public_key(pem)
     except Exception as exc:
-        raise InputValidationError("Failed to load public key — corrupt PEM.") from exc
+        raise InputValidationError(
+            "Failed to load public key — corrupt PEM."
+        ) from exc
+
+    if not isinstance(key, _SUPPORTED_PUBLIC_KEY_TYPES):
+        raise InputValidationError(
+            f"PEM contains an unsupported public key type: {type(key).__name__}. "
+            "Expected one of: RSA, ECC (SECP256R1), or X25519."
+        )
+    return key  # type: ignore[return-value]
 
 # ── RSA Encryption / Decryption ───────────────────────────────────────────────
 
@@ -291,6 +330,13 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ephemeral_pub)
+
+        if shared_secret == _X25519_ZERO_SECRET:
+            raise DecryptionError(
+                "X25519 key exchange produced a zero shared secret — "
+                "the ephemeral public key is a low-order point and the "
+                "envelope must be rejected."
+            )
 
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
