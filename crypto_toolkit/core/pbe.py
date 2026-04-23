@@ -14,19 +14,36 @@ from crypto_toolkit.core.constants import (
     ARGON2_PARALLELISM,
     ARGON2_PARAMS_LEN,
     ARGON2_PARAMS_STRUCT,
+    ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
     AES_NONCE_SIZE,
     ENVELOPE_VERSION,
     PBE_MAGIC as _PBE_MAGIC,
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
+    PBKDF2_SALT_LEN,
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
-from crypto_toolkit.core.exceptions import CryptoToolkitError, DecryptionError, EncryptionError
+from crypto_toolkit.core.exceptions import (
+    CryptoToolkitError,
+    DecryptionError,
+    EncryptionError,
+    InputValidationError,
+)
 from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
 
 _KDF_ARGON2 = b"\x01"
 _KDF_PBKDF2 = b"\x02"
-_SALT_LEN = 16
+
+if ARGON2_SALT_LEN != PBKDF2_SALT_LEN:
+    raise RuntimeError(
+        f"Invariant violated: ARGON2_SALT_LEN ({ARGON2_SALT_LEN}) != "
+        f"PBKDF2_SALT_LEN ({PBKDF2_SALT_LEN}). "
+        "Both salt lengths must be equal for the single-offset PBE envelope "
+        "parser in password_decrypt to work correctly. "
+        "Update _build_aad_* and password_decrypt to use per-KDF offsets "
+        "if the two constants must differ."
+    )
+_SALT_LEN: int = ARGON2_SALT_LEN
 
 # ── Minimum envelope length constants ─────────────────────────────────────────
 
@@ -73,23 +90,29 @@ def password_encrypt(
     password: str,
     *,
     use_argon2: bool = True,
+    argon2_time_cost:   int = ARGON2_TIME_COST,
+    argon2_memory_cost: int = ARGON2_MEMORY_COST,
+    argon2_parallelism: int = ARGON2_PARALLELISM,
 ) -> str:
     """Encrypt bytes with a password using Argon2id or PBKDF2 + AES-256-GCM."""
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
     try:
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
 
         if use_argon2:
             argon2_params = struct.pack(
                 ARGON2_PARAMS_STRUCT,
-                ARGON2_TIME_COST,
-                ARGON2_MEMORY_COST,
-                ARGON2_PARALLELISM,
+                argon2_time_cost,
+                argon2_memory_cost,
+                argon2_parallelism,
             )
             derived = derive_key_argon2(
                 password,
-                time_cost=ARGON2_TIME_COST,
-                memory_cost=ARGON2_MEMORY_COST,
-                parallelism=ARGON2_PARALLELISM,
+                time_cost=argon2_time_cost,
+                memory_cost=argon2_memory_cost,
+                parallelism=argon2_parallelism,
             )
             kdf_tag = _KDF_ARGON2
             aad = _build_aad_argon2(derived.salt, argon2_params)
@@ -144,6 +167,9 @@ def password_encrypt(
 
 def password_decrypt(token: str, password: str) -> bytes:
     """Decrypt a token produced by password_encrypt()."""
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
     try:
         raw = base64.urlsafe_b64decode(token.encode())
         magic_len = len(_PBE_MAGIC)
