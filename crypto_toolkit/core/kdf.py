@@ -26,6 +26,11 @@ from crypto_toolkit.core.constants import (
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
+_ARGON2_MAX_TIME_COST:   int = 1_000        # iterations
+_ARGON2_MAX_MEMORY_COST: int = 2_097_152    # 2 GiB expressed in KiB
+_ARGON2_MAX_PARALLELISM: int = 64           # lanes / threads
+_ARGON2_MAX_HASH_LEN:    int = 128          # output bytes
+
 _PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
     "sha256":   hashes.SHA256,
     "sha512":   hashes.SHA512,
@@ -57,17 +62,31 @@ def derive_key_argon2(
     parallelism: int = ARGON2_PARALLELISM,
     hash_len: int = ARGON2_HASH_LEN,
 ) -> DerivedKey:
-    if time_cost < 1:
-        raise InputValidationError("Argon2 time_cost must be >= 1.")
-    if memory_cost < 8192:
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
+    if not (1 <= time_cost <= _ARGON2_MAX_TIME_COST):
         raise InputValidationError(
-            f"Argon2 memory_cost must be >= 8192 KiB (8 MiB); "
-            f"received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
+            f"Argon2 time_cost must be between 1 and {_ARGON2_MAX_TIME_COST}; "
+            f"received {time_cost}."
+        )
+    if not (8192 <= memory_cost <= _ARGON2_MAX_MEMORY_COST):
+        raise InputValidationError(
+            f"Argon2 memory_cost must be between 8192 and {_ARGON2_MAX_MEMORY_COST} KiB "
+            f"(8 MiB – 2 GiB); received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
             f"Note: memory_cost is expressed in KiB, not MiB — "
             f"pass 65536 for 64 MiB (the recommended default)."
         )
-    if hash_len < 16:
-        raise InputValidationError("Argon2 hash_len must be >= 16 bytes.")
+    if not (1 <= parallelism <= _ARGON2_MAX_PARALLELISM):
+        raise InputValidationError(
+            f"Argon2 parallelism must be between 1 and {_ARGON2_MAX_PARALLELISM}; "
+            f"received {parallelism}."
+        )
+    if not (16 <= hash_len <= _ARGON2_MAX_HASH_LEN):
+        raise InputValidationError(
+            f"Argon2 hash_len must be between 16 and {_ARGON2_MAX_HASH_LEN} bytes; "
+            f"received {hash_len}."
+        )
 
     try:
         from argon2.low_level import Type as Argon2Type, hash_secret_raw  # type: ignore[import-untyped]
@@ -106,8 +125,19 @@ def derive_key_pbkdf2(
     key_len: int = PBKDF2_KEY_LEN,
     hash_algorithm: str = PBKDF2_HASH,
 ) -> DerivedKey:
+    if not password:
+        raise InputValidationError("Password must not be empty.")
 
-    min_iters = _PBKDF2_MIN_ITERATIONS.get(hash_algorithm, 600_000)
+    algo_cls = _PBKDF2_HASH_FACTORIES.get(hash_algorithm)
+    if algo_cls is None:
+        raise InputValidationError(
+            f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
+            f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
+        )
+
+    # Now that the hash is confirmed valid, the minimum-iterations lookup is safe
+    # (the key is guaranteed to be present) and the error message is accurate.
+    min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
     if iterations < min_iters:
         raise InputValidationError(
             f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
@@ -115,12 +145,6 @@ def derive_key_pbkdf2(
             f"Received: {iterations:,}."
         )
 
-    algo_cls = _PBKDF2_HASH_FACTORIES.get(hash_algorithm)
-    if algo_cls is None:
-        raise KeyDerivationError(
-            f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
-            f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
-        )
     algo = algo_cls()
 
     if salt is None:
