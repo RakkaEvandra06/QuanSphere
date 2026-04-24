@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+__all__ = ["hash_data", "hash_stream", "hash_file"]
+
 import hashlib
+import warnings
 from pathlib import Path
-from typing import BinaryIO, Union
+from typing import BinaryIO  # Union was imported but never used — removed
 
 from crypto_toolkit.core.constants import DEFAULT_HASH, FILE_CHUNK_SIZE, HASH_ALGORITHMS
 from crypto_toolkit.core.exceptions import HashingError, InputValidationError
@@ -21,7 +24,7 @@ def _get_hash_obj(algorithm: str) -> _HashType:
             f"Choose from: {sorted(HASH_ALGORITHMS)}."
         )
     if algo == "blake2b":
-        return hashlib.blake2b()
+        return hashlib.blake2b(digest_size=32)
     return hashlib.new(algo)
 
 def hash_data(data: bytes, algorithm: str = DEFAULT_HASH) -> str:
@@ -52,6 +55,15 @@ def hash_stream(
                     "Either pass a seekable stream or set seek_to_start=False."
                 )
             stream.seek(0)
+        elif stream.seekable() and stream.tell() != 0:
+            warnings.warn(
+                f"hash_stream: stream position is {stream.tell()}, not 0. "
+                "Only the bytes from the current position onward will be hashed. "
+                "Pass seek_to_start=True to hash the full stream from the "
+                "beginning, or seek to the desired position explicitly before "
+                "calling hash_stream to suppress this warning.",
+                stacklevel=2,
+            )
         h = _get_hash_obj(algorithm)
         while chunk := stream.read(chunk_size):
             h.update(chunk)
