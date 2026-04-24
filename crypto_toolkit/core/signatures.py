@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __all__ = [
     # Ed25519
     "generate_ed25519_keypair",
@@ -11,8 +13,6 @@ __all__ = [
     "sign_rsa_pss",
     "verify_rsa_pss",
 ]
-
-from __future__ import annotations
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
