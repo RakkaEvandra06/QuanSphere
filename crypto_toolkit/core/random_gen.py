@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __all__ = [
     "generate_key",
     "generate_token",
@@ -5,8 +7,6 @@ __all__ = [
     "generate_password",
     "generate_bytes_b64",
 ]
-
-from __future__ import annotations
 
 import base64
 import math
@@ -72,9 +72,14 @@ def generate_password(
 
     free_positions: int = length - num_required
 
+    positional_entropy: float = sum(
+        math.log2(length - i) for i in range(num_required)
+    )
+
     entropy_bits: float = (
         free_positions * math.log2(len(alphabet))
         + sum(math.log2(s) for s in sub_alphabet_sizes)
+        + positional_entropy   # log2(P(length, num_required))
     )
 
     if entropy_bits < _MIN_PASSWORD_ENTROPY_BITS:
