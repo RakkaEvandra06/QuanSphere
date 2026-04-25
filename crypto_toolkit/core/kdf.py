@@ -1,14 +1,16 @@
+from __future__ import annotations
+
 __all__ = [
     "DerivedKey",
     "derive_key_argon2",
     "derive_key_pbkdf2",
     "PBKDF2_SUPPORTED_HASHES",
+    "zero_bytes",
 ]
 
-from __future__ import annotations
-
+import ctypes
 import secrets
-from typing import NamedTuple, Type
+from typing import NamedTuple
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -30,8 +32,7 @@ _ARGON2_MAX_TIME_COST:   int = 1_000        # iterations
 _ARGON2_MAX_MEMORY_COST: int = 2_097_152    # 2 GiB expressed in KiB
 _ARGON2_MAX_PARALLELISM: int = 64           # lanes / threads
 _ARGON2_MAX_HASH_LEN:    int = 128          # output bytes
-
-_PBKDF2_HASH_FACTORIES: dict[str, Type[hashes.HashAlgorithm]] = {
+_PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
     "sha256":   hashes.SHA256,
     "sha512":   hashes.SHA512,
     "sha3_256": hashes.SHA3_256,
@@ -53,6 +54,16 @@ class DerivedKey(NamedTuple):
     pbkdf2_hash: str | None = None
     pbkdf2_iterations: int | None = None
 
+def zero_bytes(data: bytes) -> None:
+    """Best-effort in-place zero of a bytes object."""
+    try:
+        buf_offset = object().__sizeof__() + bytes().__sizeof__() - 1
+        ctypes.memset(id(data) + buf_offset, 0, len(data))
+    except Exception:
+        pass  # Non-CPython or layout mismatch — accept the limitation silently.
+
+# ── Argon2id key derivation ───────────────────────────────────────────────────
+
 def derive_key_argon2(
     password: str | bytes,
     *,
@@ -64,6 +75,14 @@ def derive_key_argon2(
 ) -> DerivedKey:
     if not password:
         raise InputValidationError("Password must not be empty.")
+
+    if salt is not None and len(salt) < ARGON2_SALT_LEN:
+        raise InputValidationError(
+            f"Argon2 salt must be at least {ARGON2_SALT_LEN} bytes; "
+            f"received {len(salt)} byte(s). "
+            "Pass salt=None to have a cryptographically secure random salt "
+            "generated automatically."
+        )
 
     if not (1 <= time_cost <= _ARGON2_MAX_TIME_COST):
         raise InputValidationError(
@@ -117,6 +136,8 @@ def derive_key_argon2(
     except Exception as exc:
         raise KeyDerivationError("Argon2 key derivation failed.") from exc
 
+# ── PBKDF2 key derivation ─────────────────────────────────────────────────────
+
 def derive_key_pbkdf2(
     password: str | bytes,
     *,
@@ -143,6 +164,14 @@ def derive_key_pbkdf2(
             f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
             f"(OWASP 2023 recommendation). "
             f"Received: {iterations:,}."
+        )
+
+    if salt is not None and len(salt) < PBKDF2_SALT_LEN:
+        raise InputValidationError(
+            f"PBKDF2 salt must be at least {PBKDF2_SALT_LEN} bytes; "
+            f"received {len(salt)} byte(s). "
+            "Pass salt=None to have a cryptographically secure random salt "
+            "generated automatically."
         )
 
     algo = algo_cls()
