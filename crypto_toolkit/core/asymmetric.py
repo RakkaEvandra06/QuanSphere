@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 __all__ = [
     # Key generation
     "generate_rsa_keypair",
@@ -19,8 +21,7 @@ __all__ = [
     "x25519_hybrid_decrypt",
 ]
 
-from __future__ import annotations
-
+import hmac
 import secrets
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -149,7 +150,7 @@ def load_private_key(
     pem: bytes,
     password: bytes | None = None,
 ) -> RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey:
-    """Load an RSA, ECC, or X25519 private key from PEM bytes."""
+    """Load an RSA, ECC (SECP256R1 only), or X25519 private key from PEM bytes."""
     try:
         key = serialization.load_pem_private_key(pem, password=password)
     except Exception as exc:
@@ -162,12 +163,19 @@ def load_private_key(
             f"PEM contains an unsupported private key type: {type(key).__name__}. "
             "Expected one of: RSA, ECC (SECP256R1), or X25519."
         )
+
+    if isinstance(key, EllipticCurvePrivateKey) and not isinstance(key.curve, ec.SECP256R1):
+        raise InputValidationError(
+            f"Loaded ECC private key uses curve {type(key.curve).__name__!r}; "
+            "only SECP256R1 (P-256) is supported by this toolkit."
+        )
+
     return key  # type: ignore[return-value]
 
 def load_public_key(
     pem: bytes,
 ) -> RSAPublicKey | EllipticCurvePublicKey | x25519.X25519PublicKey:
-    """Load an RSA, ECC, or X25519 public key from PEM bytes."""
+    """Load an RSA, ECC (SECP256R1 only), or X25519 public key from PEM bytes."""
     try:
         key = serialization.load_pem_public_key(pem)
     except Exception as exc:
@@ -180,6 +188,13 @@ def load_public_key(
             f"PEM contains an unsupported public key type: {type(key).__name__}. "
             "Expected one of: RSA, ECC (SECP256R1), or X25519."
         )
+
+    if isinstance(key, EllipticCurvePublicKey) and not isinstance(key.curve, ec.SECP256R1):
+        raise InputValidationError(
+            f"Loaded ECC public key uses curve {type(key.curve).__name__!r}; "
+            "only SECP256R1 (P-256) is supported by this toolkit."
+        )
+
     return key  # type: ignore[return-value]
 
 # ── RSA Encryption / Decryption ───────────────────────────────────────────────
@@ -215,6 +230,7 @@ def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
 # ── ECC Hybrid Encryption ─────────────────────────────────────────────────────
 
 def _assert_secp256r1(key: EllipticCurvePublicKey | EllipticCurvePrivateKey, operation: str) -> None:
+    """Guard retained for internal use; load_private_key / load_public_key now catch this earlier."""
     if not isinstance(key.curve, ec.SECP256R1):
         raise InputValidationError(
             f"ECC {operation} requires a SECP256R1 key; "
@@ -291,10 +307,18 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
 # ── X25519 Hybrid Encryption ──────────────────────────────────────────────────
 
 def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKey) -> bytes:
+    """Encrypt *plaintext* for *recipient_pub* using an X25519 ephemeral key exchange."""
     try:
         ephemeral_priv = x25519.X25519PrivateKey.generate()
         ephemeral_pub = ephemeral_priv.public_key()
         shared_secret = ephemeral_priv.exchange(recipient_pub)
+
+        if hmac.compare_digest(shared_secret, _X25519_ZERO_SECRET):
+            raise EncryptionError(
+                "X25519 key exchange produced a zero shared secret — "
+                "the recipient public key is a low-order point and must be "
+                "rejected.  Verify that the recipient's public key is valid."
+            )
 
         # Raw X25519 public key is always 32 bytes.
         ephemeral_pub_bytes = ephemeral_pub.public_bytes(
@@ -313,6 +337,8 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
         ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, None)
 
         return ephemeral_pub_bytes + nonce + ciphertext
+    except (EncryptionError, InputValidationError):
+        raise
     except Exception as exc:
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
 
@@ -331,7 +357,7 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ephemeral_pub)
 
-        if shared_secret == _X25519_ZERO_SECRET:
+        if hmac.compare_digest(shared_secret, _X25519_ZERO_SECRET):
             raise DecryptionError(
                 "X25519 key exchange produced a zero shared secret — "
                 "the ephemeral public key is a low-order point and the "
