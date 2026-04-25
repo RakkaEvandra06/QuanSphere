@@ -1,6 +1,6 @@
-__all__ = ["Algorithm", "encrypt", "decrypt"]
-
 from __future__ import annotations
+
+__all__ = ["Algorithm", "encrypt", "decrypt"]
 
 import base64
 import secrets
@@ -39,7 +39,7 @@ def _build_aad(header: bytes, associated_data: bytes | None) -> bytes:
             "Pass None explicitly to suppress this warning, or supply a "
             "non-empty binding context (e.g. b'user:alice').",
             DeprecationWarning,
-            stacklevel=3,   # surfaces at the encrypt/decrypt call site
+            stacklevel=3,
         )
         associated_data = None
 
