@@ -1,6 +1,6 @@
-__all__ = ["password_encrypt", "password_decrypt"]
-
 from __future__ import annotations
+
+__all__ = ["password_encrypt", "password_decrypt"]
 
 import base64
 import secrets
@@ -29,7 +29,7 @@ from crypto_toolkit.core.exceptions import (
     EncryptionError,
     InputValidationError,
 )
-from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
+from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2, zero_bytes
 
 _KDF_ARGON2 = b"\x01"
 _KDF_PBKDF2 = b"\x02"
@@ -117,12 +117,15 @@ def password_encrypt(
             kdf_tag = _KDF_ARGON2
             aad = _build_aad_argon2(derived.salt, argon2_params)
             ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
+
+            zero_bytes(derived.key)
+
             envelope = (
                 _PBE_MAGIC
                 + ENVELOPE_VERSION
                 + kdf_tag
                 + derived.salt
-                + argon2_params   # 10 bytes: time_cost(4) + memory_cost(4) + parallelism(2)
+                + argon2_params
                 + nonce
                 + ciphertext
             )
@@ -148,6 +151,9 @@ def password_encrypt(
                 derived.salt, hash_tag, derived.pbkdf2_iterations
             )
             ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
+
+            zero_bytes(derived.key)
+
             envelope = (
                 _PBE_MAGIC
                 + ENVELOPE_VERSION
@@ -248,7 +254,12 @@ def password_decrypt(token: str, password: str) -> bytes:
             )
             aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
 
-        return AESGCM(derived.key).decrypt(nonce, ciphertext, aad)
+        plaintext = AESGCM(derived.key).decrypt(nonce, ciphertext, aad)
+
+        # key material does not linger in heap memory longer than necessary.
+        zero_bytes(derived.key)
+
+        return plaintext
     except CryptoToolkitError:
         raise
     except Exception as exc:
