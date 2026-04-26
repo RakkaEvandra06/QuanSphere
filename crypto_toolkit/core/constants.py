@@ -62,7 +62,7 @@ ECC_CURVE = "secp256r1"    # NIST P-256, widely supported and audited
 
 # ── Hashing ───────────────────────────────────────────────────────────────────
 
-HASH_ALGORITHMS = frozenset({"sha256", "sha512", "sha3_256", "sha3_512", "blake2b"})
+HASH_ALGORITHMS = frozenset({"sha256", "sha512", "sha3_256", "sha3_512", "blake2b", "blake2s"})
 DEFAULT_HASH = "sha256"
 
 # ── Key derivation (Argon2id) ─────────────────────────────────────────────────
@@ -94,9 +94,10 @@ PBKDF2_TAG_TO_HASH: dict[bytes, str] = {v: k for k, v in PBKDF2_HASH_TO_TAG.item
 
 # ── File encryption ───────────────────────────────────────────────────────────
 
+# FILE_CHUNK_SIZE is the maximum *plaintext* bytes read per encryption pass (write side).
 FILE_CHUNK_SIZE = 64 * 1024  # 64 KiB per chunk
 
-FILE_MAX_BLOCK_SIZE = FILE_CHUNK_SIZE + AES_NONCE_SIZE + AES_TAG_SIZE + 1024
+FILE_MAX_BLOCK_SIZE = FILE_CHUNK_SIZE + AES_NONCE_SIZE + AES_TAG_SIZE  # 65564 bytes
 
 # ── Encoded format markers ────────────────────────────────────────────────────
 
