@@ -5,7 +5,7 @@ __all__ = ["hash_data", "hash_stream", "hash_file"]
 import hashlib
 import warnings
 from pathlib import Path
-from typing import BinaryIO  # Union was imported but never used — removed
+from typing import BinaryIO
 
 from crypto_toolkit.core.constants import DEFAULT_HASH, FILE_CHUNK_SIZE, HASH_ALGORITHMS
 from crypto_toolkit.core.exceptions import HashingError, InputValidationError
@@ -24,7 +24,9 @@ def _get_hash_obj(algorithm: str) -> _HashType:
             f"Choose from: {sorted(HASH_ALGORITHMS)}."
         )
     if algo == "blake2b":
-        return hashlib.blake2b(digest_size=32)
+        return hashlib.blake2b()           # canonical 512-bit / 64-byte output
+    if algo == "blake2s":
+        return hashlib.blake2s()           # native 256-bit / 32-byte output
     return hashlib.new(algo)
 
 def hash_data(data: bytes, algorithm: str = DEFAULT_HASH) -> str:
