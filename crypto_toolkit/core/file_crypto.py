@@ -47,8 +47,8 @@ _KDF_TAG_RAW    = b"\x00"  # raw key was provided directly
 _KDF_TAG_ARGON2 = b"\x01"  # key derived via Argon2id
 _KDF_TAG_PBKDF2 = b"\x02"  # key derived via PBKDF2
 _EOF_BLOCK_LEN: int = AES_NONCE_SIZE + 8 + AES_TAG_SIZE   # 12 + 8 + 16 = 36
-_MIN_CHUNK_SIZE: int = 1
-_MAX_CHUNK_SIZE: int = FILE_MAX_BLOCK_SIZE
+_MIN_CHUNK_SIZE: int = 4 * 1024       # 4 KiB — avoids degenerate overhead
+_MAX_CHUNK_SIZE: int = FILE_CHUNK_SIZE # 64 KiB — matches plaintext read size
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
@@ -170,7 +170,10 @@ def _validate_chunk_size(chunk_size: int) -> None:
     if not (_MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE):
         raise EncryptionError(
             f"chunk_size must be between {_MIN_CHUNK_SIZE} and "
-            f"{_MAX_CHUNK_SIZE} bytes; received {chunk_size}."
+            f"{_MAX_CHUNK_SIZE} bytes; received {chunk_size}. "
+            f"Values below {_MIN_CHUNK_SIZE} bytes produce excessive per-chunk overhead; "
+            f"values above {_MAX_CHUNK_SIZE} bytes exceed the maximum block size "
+            f"that the decryption path accepts."
         )
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -194,7 +197,8 @@ def encrypt_file(
         raise FileOperationError(f"Source file not found: {src_path}")
 
     aesgcm = AESGCM(key)
-    salt = secrets.token_bytes(_HEADER_SALT_LEN)
+    salt = b"\x00" * _HEADER_SALT_LEN
+
     _encrypt_stream(
         src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW,
         pbkdf2_hash_tag=None,
@@ -209,9 +213,12 @@ def encrypt_file_with_password(
     *,
     chunk_size: int = FILE_CHUNK_SIZE,
     use_argon2: bool = True,
+    argon2_time_cost:   int = ARGON2_TIME_COST,
+    argon2_memory_cost: int = ARGON2_MEMORY_COST,
+    argon2_parallelism: int = ARGON2_PARALLELISM,
 ) -> None:
     """Encrypt a file with a password; the key is derived via Argon2id or PBKDF2."""
-    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
+    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2, zero_bytes
 
     _assert_distinct_paths(src_path, dst_path, "encrypt file in place")
 
@@ -221,17 +228,18 @@ def encrypt_file_with_password(
         raise FileOperationError(f"Source file not found: {src_path}")
 
     if use_argon2:
+        # module-level constants, allowing per-call strength tuning.
         argon2_params = struct.pack(
             ARGON2_PARAMS_STRUCT,
-            ARGON2_TIME_COST,
-            ARGON2_MEMORY_COST,
-            ARGON2_PARALLELISM,
+            argon2_time_cost,
+            argon2_memory_cost,
+            argon2_parallelism,
         )
         derived = derive_key_argon2(
             password,
-            time_cost=ARGON2_TIME_COST,
-            memory_cost=ARGON2_MEMORY_COST,
-            parallelism=ARGON2_PARALLELISM,
+            time_cost=argon2_time_cost,
+            memory_cost=argon2_memory_cost,
+            parallelism=argon2_parallelism,
         )
         kdf_tag           = _KDF_TAG_ARGON2
         pbkdf2_hash_tag   = None
@@ -248,12 +256,17 @@ def encrypt_file_with_password(
         pbkdf2_iterations = derived.pbkdf2_iterations
 
     aesgcm = AESGCM(derived.key)
+
     _encrypt_stream(
         src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag,
         pbkdf2_hash_tag=pbkdf2_hash_tag,
         pbkdf2_iterations=pbkdf2_iterations,
         argon2_params=argon2_params,
     )
+
+    # Best-effort wipe of the Python-side key bytes now that the stream has
+    # been fully written and the aesgcm object is no longer used.
+    zero_bytes(derived.key)
 
 def decrypt_file(
     src_path: Path,
@@ -304,7 +317,7 @@ def decrypt_file_with_password(
     password: str,
 ) -> None:
     """Decrypt a password-protected encrypted file."""
-    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2
+    from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2, zero_bytes
 
     _assert_distinct_paths(src_path, dst_path, "decrypt file in place")
 
@@ -324,8 +337,13 @@ def decrypt_file_with_password(
                     "This file was encrypted with a raw key — use decrypt_file()."
                 )
             elif kdf_tag == _KDF_TAG_ARGON2:
+                if argon2_params_raw is None:
+                    raise DecryptionError(
+                        "File header is corrupt — Argon2 params field is missing "
+                        "despite the Argon2 KDF tag being present."
+                    )
                 time_cost, memory_cost, parallelism = struct.unpack(
-                    ARGON2_PARAMS_STRUCT, argon2_params_raw  # type: ignore[arg-type]
+                    ARGON2_PARAMS_STRUCT, argon2_params_raw
                 )
                 derived = derive_key_argon2(
                     password,
@@ -364,6 +382,8 @@ def decrypt_file_with_password(
                 argon2_params=argon2_params_raw,
             )
             aesgcm_local = AESGCM(derived.key)
+            zero_bytes(derived.key)
+
             _decrypt_chunks(src, dst, aesgcm_local, header_bytes)
         tmp_path.replace(dst_path)
         success = True
@@ -435,12 +455,11 @@ def _encrypt_stream(
                 if not chunk:
                     # Write the zero-length EOF sentinel marker.
                     dst.write(struct.pack(_CHUNK_LEN_FMT, 0))
-
                     eof_nonce = secrets.token_bytes(AES_NONCE_SIZE)
                     eof_aad   = _chunk_aad(chunk_index, header_digest)
                     eof_ct    = aesgcm.encrypt(
                         eof_nonce,
-                        struct.pack(">Q", chunk_index),  # 8-byte count — matches ">Q" in _chunk_aad
+                        struct.pack(">Q", chunk_index),  # payload = total data chunk count
                         eof_aad,
                     )
                     dst.write(eof_nonce + eof_ct)
