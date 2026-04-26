@@ -1,6 +1,6 @@
-__all__ = ["success", "info", "warn", "error", "result", "result_bytes"]
-
 from __future__ import annotations
+
+__all__ = ["success", "info", "warn", "error", "result", "result_bytes"]
 
 from rich.console import Console
 from rich.panel import Panel
