@@ -55,9 +55,12 @@ class DerivedKey(NamedTuple):
     pbkdf2_iterations: int | None = None
 
 def zero_bytes(data: bytes) -> None:
-    """Best-effort in-place zero of a bytes object."""
+    """Best-effort in-place zero of a bytes object (CPython only)."""
     try:
-        buf_offset = object().__sizeof__() + bytes().__sizeof__() - 1
+        # bytes.__basicsize__ is the size of the C PyBytesObject header
+        # *including* the one-byte ob_val[1] placeholder defined by the flex
+        # array.  The actual payload therefore begins at basicsize - 1.
+        buf_offset = bytes.__basicsize__ - 1   # 32 on CPython 3.10-3.12 / 64-bit
         ctypes.memset(id(data) + buf_offset, 0, len(data))
     except Exception:
         pass  # Non-CPython or layout mismatch — accept the limitation silently.
