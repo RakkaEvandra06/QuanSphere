@@ -24,9 +24,10 @@ def _get_hash_obj(algorithm: str) -> _HashType:
             f"Choose from: {sorted(HASH_ALGORITHMS)}."
         )
     if algo == "blake2b":
-        return hashlib.blake2b()           # canonical 512-bit / 64-byte output
+        return hashlib.blake2b(digest_size=32)
     if algo == "blake2s":
-        return hashlib.blake2s()           # native 256-bit / 32-byte output
+        # BLAKE2s already defaults to 32 bytes; explicit for clarity.
+        return hashlib.blake2s(digest_size=32)
     return hashlib.new(algo)
 
 def hash_data(data: bytes, algorithm: str = DEFAULT_HASH) -> str:
