@@ -49,6 +49,16 @@ _KDF_TAG_PBKDF2 = b"\x02"  # key derived via PBKDF2
 _EOF_BLOCK_LEN: int = AES_NONCE_SIZE + 8 + AES_TAG_SIZE   # 12 + 8 + 16 = 36
 _MIN_CHUNK_SIZE: int = 4 * 1024       # 4 KiB — avoids degenerate overhead
 _MAX_CHUNK_SIZE: int = FILE_CHUNK_SIZE # 64 KiB — matches plaintext read size
+_DECRYPT_MAX_TIME_COST:   int = ARGON2_TIME_COST   * 10   # 30 iterations
+_DECRYPT_MAX_MEMORY_COST: int = ARGON2_MEMORY_COST * 4    # 256 MiB in KiB
+_DECRYPT_MAX_PARALLELISM: int = ARGON2_PARALLELISM * 4    # 16 lanes
+
+_PBKDF2_MAX_ITERATIONS: dict[str, int] = {
+    "sha256":   10_000_000,   # ~16× OWASP minimum → ~16 s worst-case
+    "sha512":    3_500_000,
+    "sha3_256":  3_000_000,
+    "sha3_512":  1_500_000,
+}
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
@@ -197,7 +207,7 @@ def encrypt_file(
         raise FileOperationError(f"Source file not found: {src_path}")
 
     aesgcm = AESGCM(key)
-    salt = b"\x00" * _HEADER_SALT_LEN
+    salt = secrets.token_bytes(_HEADER_SALT_LEN)
 
     _encrypt_stream(
         src_path, dst_path, aesgcm, salt, chunk_size, _KDF_TAG_RAW,
@@ -345,6 +355,20 @@ def decrypt_file_with_password(
                 time_cost, memory_cost, parallelism = struct.unpack(
                     ARGON2_PARAMS_STRUCT, argon2_params_raw
                 )
+                if (
+                    time_cost   > _DECRYPT_MAX_TIME_COST
+                    or memory_cost  > _DECRYPT_MAX_MEMORY_COST
+                    or parallelism  > _DECRYPT_MAX_PARALLELISM
+                ):
+                    raise DecryptionError(
+                        f"File header Argon2 parameters exceed the maximum allowed "
+                        f"(time_cost≤{_DECRYPT_MAX_TIME_COST}, "
+                        f"memory_cost≤{_DECRYPT_MAX_MEMORY_COST} KiB, "
+                        f"parallelism≤{_DECRYPT_MAX_PARALLELISM}); "
+                        f"received time_cost={time_cost}, memory_cost={memory_cost}, "
+                        f"parallelism={parallelism}. "
+                        "The file may originate from an untrusted or malicious source."
+                    )
                 derived = derive_key_argon2(
                     password,
                     salt=salt,
@@ -358,6 +382,14 @@ def decrypt_file_with_password(
                     raise DecryptionError(
                         "File header is corrupt — PBKDF2 iteration count or hash "
                         "algorithm field is missing."
+                    )
+                _pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
+                if pbkdf2_iterations > _pbkdf2_max:
+                    raise DecryptionError(
+                        f"File header PBKDF2 iteration count {pbkdf2_iterations:,} "
+                        f"exceeds the maximum allowed ({_pbkdf2_max:,}) for "
+                        f"{pbkdf2_hash!r}. "
+                        "The file may originate from an untrusted or malicious source."
                     )
                 derived = derive_key_pbkdf2(
                     password,
