@@ -33,6 +33,16 @@ from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2, zero_b
 
 _KDF_ARGON2 = b"\x01"
 _KDF_PBKDF2 = b"\x02"
+_DECRYPT_MAX_TIME_COST:   int = ARGON2_TIME_COST   * 10   # 30 iterations
+_DECRYPT_MAX_MEMORY_COST: int = ARGON2_MEMORY_COST * 4    # 256 MiB in KiB
+_DECRYPT_MAX_PARALLELISM: int = ARGON2_PARALLELISM * 4    # 16 lanes
+
+_PBKDF2_MAX_ITERATIONS: dict[str, int] = {
+    "sha256":   10_000_000,   # 600 k/s × 16× OWASP → ~16 s max
+    "sha512":    3_500_000,   # ~210 k/s × 16× OWASP
+    "sha3_256":  3_000_000,   # ~200 k/s × 15× OWASP
+    "sha3_512":  1_500_000,   # ~100 k/s × 15× OWASP
+}
 
 if ARGON2_SALT_LEN != PBKDF2_SALT_LEN:
     raise RuntimeError(
@@ -218,6 +228,21 @@ def password_decrypt(token: str, password: str) -> bytes:
                 ARGON2_PARAMS_STRUCT, argon2_params_raw
             )
 
+            if (
+                time_cost   > _DECRYPT_MAX_TIME_COST
+                or memory_cost  > _DECRYPT_MAX_MEMORY_COST
+                or parallelism  > _DECRYPT_MAX_PARALLELISM
+            ):
+                raise DecryptionError(
+                    f"Envelope Argon2 parameters exceed the maximum allowed "
+                    f"(time_cost≤{_DECRYPT_MAX_TIME_COST}, "
+                    f"memory_cost≤{_DECRYPT_MAX_MEMORY_COST} KiB, "
+                    f"parallelism≤{_DECRYPT_MAX_PARALLELISM}); "
+                    f"received time_cost={time_cost}, memory_cost={memory_cost}, "
+                    f"parallelism={parallelism}. "
+                    "The token may originate from an untrusted or malicious source."
+                )
+
             nonce      = raw[offset : offset + AES_NONCE_SIZE]
             offset    += AES_NONCE_SIZE
             ciphertext = raw[offset:]
@@ -241,6 +266,14 @@ def password_decrypt(token: str, password: str) -> bytes:
             offset += 1  # consume hash_tag byte
             (pbkdf2_iterations,) = struct.unpack(">I", raw[offset : offset + 4])
             offset += 4  # consume 4-byte iterations field
+
+            _pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
+            if pbkdf2_iterations > _pbkdf2_max:
+                raise DecryptionError(
+                    f"PBKDF2 iteration count {pbkdf2_iterations:,} exceeds the "
+                    f"maximum allowed ({_pbkdf2_max:,}) for {pbkdf2_hash!r}. "
+                    "The token may originate from an untrusted or malicious source."
+                )
 
             nonce      = raw[offset : offset + AES_NONCE_SIZE]
             offset    += AES_NONCE_SIZE
