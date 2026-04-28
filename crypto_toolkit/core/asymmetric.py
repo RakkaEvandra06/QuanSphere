@@ -164,6 +164,13 @@ def load_private_key(
             "Expected one of: RSA, ECC (SECP256R1), or X25519."
         )
 
+    if isinstance(key, RSAPrivateKey) and key.key_size < 2048:
+        raise InputValidationError(
+            f"Loaded RSA private key is only {key.key_size} bits; "
+            "a minimum of 2048 bits is required by this toolkit. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
+        )
+
     if isinstance(key, EllipticCurvePrivateKey) and not isinstance(key.curve, ec.SECP256R1):
         raise InputValidationError(
             f"Loaded ECC private key uses curve {type(key.curve).__name__!r}; "
@@ -187,6 +194,13 @@ def load_public_key(
         raise InputValidationError(
             f"PEM contains an unsupported public key type: {type(key).__name__}. "
             "Expected one of: RSA, ECC (SECP256R1), or X25519."
+        )
+
+    if isinstance(key, RSAPublicKey) and key.key_size < 2048:
+        raise InputValidationError(
+            f"Loaded RSA public key is only {key.key_size} bits; "
+            "a minimum of 2048 bits is required by this toolkit. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
         )
 
     if isinstance(key, EllipticCurvePublicKey) and not isinstance(key.curve, ec.SECP256R1):
@@ -215,6 +229,14 @@ def rsa_encrypt(plaintext: bytes, public_key: RSAPublicKey) -> bytes:
         raise EncryptionError("RSA encryption failed.") from exc
 
 def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
+    expected_len: int = (private_key.key_size + 7) // 8
+    if len(ciphertext) != expected_len:
+        raise DecryptionError(
+            f"RSA ciphertext must be exactly {expected_len} bytes for a "
+            f"{private_key.key_size}-bit key; received {len(ciphertext)} bytes. "
+            "The ciphertext may be truncated, corrupted, or intended for a "
+            "different key."
+        )
     try:
         return private_key.decrypt(
             ciphertext,
@@ -249,11 +271,15 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             serialization.PublicFormat.UncompressedPoint,
         )
 
+        recipient_pub_bytes = recipient_pub.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=_ECC_HKDF_INFO,
+            info=_ECC_HKDF_INFO + recipient_pub_bytes,
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -289,11 +315,15 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
+        recipient_pub_bytes = private_key.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=_ECC_HKDF_INFO,
+            info=_ECC_HKDF_INFO + recipient_pub_bytes,
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
@@ -326,11 +356,15 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
             serialization.PublicFormat.Raw,
         )
 
+        recipient_pub_raw = recipient_pub.public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=_X25519_HKDF_INFO,
+            info=_X25519_HKDF_INFO + recipient_pub_raw,
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -364,11 +398,15 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
                 "envelope must be rejected."
             )
 
+        recipient_pub_raw = private_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
         aes_key = HKDF(
             algorithm=hashes.SHA256(),
             length=AES_KEY_SIZE,
             salt=ephemeral_pub_bytes,
-            info=_X25519_HKDF_INFO,
+            info=_X25519_HKDF_INFO + recipient_pub_raw,
         ).derive(shared_secret)
 
         return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
