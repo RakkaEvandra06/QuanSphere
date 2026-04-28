@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""symmetric.py — AES-256-GCM and ChaCha20-Poly1305 authenticated encryption."""
+
 __all__ = ["Algorithm", "encrypt", "decrypt"]
 
 import base64
