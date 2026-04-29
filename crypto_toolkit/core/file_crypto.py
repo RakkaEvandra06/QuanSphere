@@ -33,10 +33,14 @@ from crypto_toolkit.core.constants import (
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
 from crypto_toolkit.core.exceptions import (
-    CryptoToolkitError,
     DecryptionError,
     EncryptionError,
     FileOperationError,
+)
+from crypto_toolkit.core.kdf import (
+    ARGON2_MAX_TIME_COST   as _ARGON2_MAX_TIME_COST,
+    ARGON2_MAX_MEMORY_COST as _ARGON2_MAX_MEMORY_COST,
+    ARGON2_MAX_PARALLELISM as _ARGON2_MAX_PARALLELISM,
 )
 
 _HEADER_SALT_LEN: int = ARGON2_SALT_LEN
@@ -49,9 +53,9 @@ _KDF_TAG_PBKDF2 = b"\x02"  # key derived via PBKDF2
 _EOF_BLOCK_LEN: int = AES_NONCE_SIZE + 8 + AES_TAG_SIZE   # 12 + 8 + 16 = 36
 _MIN_CHUNK_SIZE: int = 4 * 1024       # 4 KiB — avoids degenerate overhead
 _MAX_CHUNK_SIZE: int = FILE_CHUNK_SIZE # 64 KiB — matches plaintext read size
-_DECRYPT_MAX_TIME_COST:   int = ARGON2_TIME_COST   * 10   # 30 iterations
-_DECRYPT_MAX_MEMORY_COST: int = ARGON2_MEMORY_COST * 4    # 256 MiB in KiB
-_DECRYPT_MAX_PARALLELISM: int = ARGON2_PARALLELISM * 4    # 16 lanes
+_DECRYPT_MAX_TIME_COST:   int = _ARGON2_MAX_TIME_COST    # 1 000 iterations
+_DECRYPT_MAX_MEMORY_COST: int = _ARGON2_MAX_MEMORY_COST  # 2 GiB in KiB
+_DECRYPT_MAX_PARALLELISM: int = _ARGON2_MAX_PARALLELISM  # 64 lanes
 
 _PBKDF2_MAX_ITERATIONS: dict[str, int] = {
     "sha256":   10_000_000,   # ~16× OWASP minimum → ~16 s worst-case
@@ -143,14 +147,14 @@ def _build_header_bytes(
     parts: list[bytes] = [FILE_ENC_MAGIC, FILE_ENC_VERSION, kdf_tag, salt]
     if kdf_tag == _KDF_TAG_ARGON2:
         if argon2_params is None:
-            raise CryptoToolkitError(
+            raise EncryptionError(
                 "argon2_params is required when kdf_tag is _KDF_TAG_ARGON2 "
                 "— cannot build a valid header."
             )
         parts.append(argon2_params)
     if kdf_tag == _KDF_TAG_PBKDF2:
         if pbkdf2_hash_tag is None or pbkdf2_iterations is None:
-            raise CryptoToolkitError(
+            raise EncryptionError(
                 "pbkdf2_hash_tag and pbkdf2_iterations are required when "
                 "kdf_tag is _KDF_TAG_PBKDF2 — cannot build a valid header."
             )
@@ -267,16 +271,17 @@ def encrypt_file_with_password(
 
     aesgcm = AESGCM(derived.key)
 
-    _encrypt_stream(
-        src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag,
-        pbkdf2_hash_tag=pbkdf2_hash_tag,
-        pbkdf2_iterations=pbkdf2_iterations,
-        argon2_params=argon2_params,
-    )
-
-    # Best-effort wipe of the Python-side key bytes now that the stream has
-    # been fully written and the aesgcm object is no longer used.
-    zero_bytes(derived.key)
+    try:
+        _encrypt_stream(
+            src_path, dst_path, aesgcm, derived.salt, chunk_size, kdf_tag,
+            pbkdf2_hash_tag=pbkdf2_hash_tag,
+            pbkdf2_iterations=pbkdf2_iterations,
+            argon2_params=argon2_params,
+        )
+    finally:
+        # Best-effort wipe of the Python-side key bytes.  Placed in finally
+        # so the wipe runs whether _encrypt_stream succeeds or raises.
+        zero_bytes(derived.key)
 
 def decrypt_file(
     src_path: Path,
@@ -414,9 +419,10 @@ def decrypt_file_with_password(
                 argon2_params=argon2_params_raw,
             )
             aesgcm_local = AESGCM(derived.key)
-            zero_bytes(derived.key)
-
+            # AESGCM stores a reference to derived.key; zeroing it before
+            # use would silently wipe the key the cipher is about to read.
             _decrypt_chunks(src, dst, aesgcm_local, header_bytes)
+            zero_bytes(derived.key)
         tmp_path.replace(dst_path)
         success = True
     except (DecryptionError, FileOperationError):
