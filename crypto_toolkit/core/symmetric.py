@@ -40,7 +40,7 @@ def _build_aad(header: bytes, associated_data: bytes | None) -> bytes:
             "associated_data=b'' is equivalent to None (no AAD is applied). "
             "Pass None explicitly to suppress this warning, or supply a "
             "non-empty binding context (e.g. b'user:alice').",
-            DeprecationWarning,
+            UserWarning,
             stacklevel=3,
         )
         associated_data = None
