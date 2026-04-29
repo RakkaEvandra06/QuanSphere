@@ -29,13 +29,20 @@ from crypto_toolkit.core.exceptions import (
     EncryptionError,
     InputValidationError,
 )
-from crypto_toolkit.core.kdf import derive_key_argon2, derive_key_pbkdf2, zero_bytes
+from crypto_toolkit.core.kdf import (
+    derive_key_argon2,
+    derive_key_pbkdf2,
+    zero_bytes,
+    ARGON2_MAX_TIME_COST   as _ARGON2_MAX_TIME_COST,
+    ARGON2_MAX_MEMORY_COST as _ARGON2_MAX_MEMORY_COST,
+    ARGON2_MAX_PARALLELISM as _ARGON2_MAX_PARALLELISM,
+)
 
 _KDF_ARGON2 = b"\x01"
 _KDF_PBKDF2 = b"\x02"
-_DECRYPT_MAX_TIME_COST:   int = ARGON2_TIME_COST   * 10   # 30 iterations
-_DECRYPT_MAX_MEMORY_COST: int = ARGON2_MEMORY_COST * 4    # 256 MiB in KiB
-_DECRYPT_MAX_PARALLELISM: int = ARGON2_PARALLELISM * 4    # 16 lanes
+_DECRYPT_MAX_TIME_COST:   int = _ARGON2_MAX_TIME_COST    # 1 000 iterations
+_DECRYPT_MAX_MEMORY_COST: int = _ARGON2_MAX_MEMORY_COST  # 2 GiB in KiB
+_DECRYPT_MAX_PARALLELISM: int = _ARGON2_MAX_PARALLELISM  # 64 lanes
 
 _PBKDF2_MAX_ITERATIONS: dict[str, int] = {
     "sha256":   10_000_000,   # 600 k/s × 16× OWASP → ~16 s max
