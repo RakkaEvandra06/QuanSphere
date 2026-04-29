@@ -6,6 +6,9 @@ __all__ = [
     "derive_key_pbkdf2",
     "PBKDF2_SUPPORTED_HASHES",
     "zero_bytes",
+    "ARGON2_MAX_TIME_COST",
+    "ARGON2_MAX_MEMORY_COST",
+    "ARGON2_MAX_PARALLELISM",
 ]
 
 import ctypes
@@ -28,9 +31,9 @@ from crypto_toolkit.core.constants import (
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
-_ARGON2_MAX_TIME_COST:   int = 1_000        # iterations
-_ARGON2_MAX_MEMORY_COST: int = 2_097_152    # 2 GiB expressed in KiB
-_ARGON2_MAX_PARALLELISM: int = 64           # lanes / threads
+ARGON2_MAX_TIME_COST:   int = 1_000        # iterations
+ARGON2_MAX_MEMORY_COST: int = 2_097_152    # 2 GiB expressed in KiB
+ARGON2_MAX_PARALLELISM: int = 64           # lanes / threads
 _ARGON2_MAX_HASH_LEN:    int = 128          # output bytes
 _PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
     "sha256":   hashes.SHA256,
@@ -57,13 +60,18 @@ class DerivedKey(NamedTuple):
 def zero_bytes(data: bytes) -> None:
     """Best-effort in-place zero of a bytes object (CPython only)."""
     try:
-        # bytes.__basicsize__ is the size of the C PyBytesObject header
-        # *including* the one-byte ob_val[1] placeholder defined by the flex
-        # array.  The actual payload therefore begins at basicsize - 1.
-        buf_offset = bytes.__basicsize__ - 1   # 32 on CPython 3.10-3.12 / 64-bit
+        buf_offset = bytes.__basicsize__ - 1   # 33 on CPython 3.10-3.12 / 64-bit
         ctypes.memset(id(data) + buf_offset, 0, len(data))
+        # Verify the wipe in debug builds so any layout change is caught
+        # immediately rather than silently allowing key material to persist.
+        assert not __debug__ or data == b"\x00" * len(data), (
+            "zero_bytes: post-wipe verification failed — "
+            "buf_offset calculation may be wrong for this Python build"
+        )
     except Exception:
-        pass  # Non-CPython or layout mismatch — accept the limitation silently.
+        # Non-CPython runtime or layout mismatch — accept the limitation
+        # silently.  The caller still proceeds; this is best-effort only.
+        pass
 
 # ── Argon2id key derivation ───────────────────────────────────────────────────
 
@@ -87,21 +95,21 @@ def derive_key_argon2(
             "generated automatically."
         )
 
-    if not (1 <= time_cost <= _ARGON2_MAX_TIME_COST):
+    if not (1 <= time_cost <= ARGON2_MAX_TIME_COST):
         raise InputValidationError(
-            f"Argon2 time_cost must be between 1 and {_ARGON2_MAX_TIME_COST}; "
+            f"Argon2 time_cost must be between 1 and {ARGON2_MAX_TIME_COST}; "
             f"received {time_cost}."
         )
-    if not (8192 <= memory_cost <= _ARGON2_MAX_MEMORY_COST):
+    if not (8192 <= memory_cost <= ARGON2_MAX_MEMORY_COST):
         raise InputValidationError(
-            f"Argon2 memory_cost must be between 8192 and {_ARGON2_MAX_MEMORY_COST} KiB "
+            f"Argon2 memory_cost must be between 8192 and {ARGON2_MAX_MEMORY_COST} KiB "
             f"(8 MiB – 2 GiB); received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
             f"Note: memory_cost is expressed in KiB, not MiB — "
             f"pass 65536 for 64 MiB (the recommended default)."
         )
-    if not (1 <= parallelism <= _ARGON2_MAX_PARALLELISM):
+    if not (1 <= parallelism <= ARGON2_MAX_PARALLELISM):
         raise InputValidationError(
-            f"Argon2 parallelism must be between 1 and {_ARGON2_MAX_PARALLELISM}; "
+            f"Argon2 parallelism must be between 1 and {ARGON2_MAX_PARALLELISM}; "
             f"received {parallelism}."
         )
     if not (16 <= hash_len <= _ARGON2_MAX_HASH_LEN):
