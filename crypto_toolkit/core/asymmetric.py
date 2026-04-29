@@ -283,7 +283,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, None)
+        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
 
         return ephemeral_pub_bytes + nonce + ciphertext
     except InputValidationError:
@@ -326,7 +326,8 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             info=_ECC_HKDF_INFO + recipient_pub_bytes,
         ).derive(shared_secret)
 
-        return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+        # AAD must match what ecc_hybrid_encrypt passed — ephemeral_pub_bytes.
+        return AESGCM(aes_key).decrypt(nonce, ciphertext, ephemeral_pub_bytes)
     except InputValidationError:
         raise
     except DecryptionError:
@@ -368,7 +369,9 @@ def x25519_hybrid_encrypt(plaintext: bytes, recipient_pub: x25519.X25519PublicKe
         ).derive(shared_secret)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, None)
+        # Bind the ciphertext explicitly to this envelope by passing the
+        # ephemeral public key as AEAD AAD.  Mirrors the ECC hybrid pattern.
+        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
 
         return ephemeral_pub_bytes + nonce + ciphertext
     except (EncryptionError, InputValidationError):
@@ -409,7 +412,8 @@ def x25519_hybrid_decrypt(envelope: bytes, private_key: x25519.X25519PrivateKey)
             info=_X25519_HKDF_INFO + recipient_pub_raw,
         ).derive(shared_secret)
 
-        return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+        # AAD must match what x25519_hybrid_encrypt passed — ephemeral_pub_bytes.
+        return AESGCM(aes_key).decrypt(nonce, ciphertext, ephemeral_pub_bytes)
     except DecryptionError:
         raise
     except Exception as exc:
