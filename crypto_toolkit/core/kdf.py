@@ -12,7 +12,9 @@ __all__ = [
 ]
 
 import ctypes
+import platform
 import secrets
+import warnings
 from typing import NamedTuple
 
 from cryptography.hazmat.primitives import hashes
@@ -31,10 +33,17 @@ from crypto_toolkit.core.constants import (
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
-ARGON2_MAX_TIME_COST:   int = 1_000        # iterations
-ARGON2_MAX_MEMORY_COST: int = 2_097_152    # 2 GiB expressed in KiB
-ARGON2_MAX_PARALLELISM: int = 64           # lanes / threads
-_ARGON2_MAX_HASH_LEN:    int = 128          # output bytes
+# ── Public limits (exported for use by pbe.py and file_crypto.py) ─────────────
+
+ARGON2_MAX_TIME_COST: int = 1_000        # iterations
+ARGON2_MAX_MEMORY_COST: int = 2_097_152  # 2 GiB expressed in KiB
+ARGON2_MAX_PARALLELISM: int = 64         # lanes / threads
+
+# Internal cap on output length — not exported because callers use ARGON2_HASH_LEN.
+_ARGON2_MAX_HASH_LEN: int = 128          # bytes
+
+# ── PBKDF2 hash algorithm registry ────────────────────────────────────────────
+
 _PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
     "sha256":   hashes.SHA256,
     "sha512":   hashes.SHA512,
@@ -44,49 +53,63 @@ _PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
 
 PBKDF2_SUPPORTED_HASHES: frozenset[str] = frozenset(_PBKDF2_HASH_FACTORIES)
 
+# OWASP 2023 minimum iteration counts, keyed by hash name.
 _PBKDF2_MIN_ITERATIONS: dict[str, int] = {
-    "sha256":   600_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
-    "sha512":   210_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
-    "sha3_256": 200_000,   # SHA3-256 is ~3× slower than SHA-256 per iteration
-    "sha3_512": 100_000,   # SHA3-512 is ~2× slower than SHA-512 per iteration
+    "sha256":   600_000,  # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
+    "sha512":   210_000,  # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
+    "sha3_256": 200_000,  # SHA3-256 is ~3× slower than SHA-256 per iteration
+    "sha3_512": 100_000,  # SHA3-512 is ~2× slower than SHA-512 per iteration
 }
 
+# ── Return type ───────────────────────────────────────────────────────────────
+
 class DerivedKey(NamedTuple):
+    """Container for a derived key and the metadata needed to reproduce it."""
+
     key: bytes
     salt: bytes
-    pbkdf2_hash: str | None = None
-    pbkdf2_iterations: int | None = None
+    pbkdf2_hash: str | None = None         # None for Argon2-derived keys
+    pbkdf2_iterations: int | None = None   # None for Argon2-derived keys
+
+# ── Memory erasure ────────────────────────────────────────────────────────────
 
 def zero_bytes(data: bytes) -> None:
-    """Best-effort in-place zero of a bytes object (CPython only)."""
+    """Best-effort in-place zeroing of a ``bytes`` object (CPython only)."""
+    if platform.python_implementation() != "CPython":
+        warnings.warn(
+            "zero_bytes: memory wiping is a no-op on non-CPython runtimes "
+            f"(detected: {platform.python_implementation()}). "
+            "Key material may persist on the heap for the lifetime of the process. "
+            "Use a CPython interpreter if in-memory key erasure is a hard requirement.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+
     try:
-        buf_offset = bytes.__basicsize__ - 1   # 33 on CPython 3.10-3.12 / 64-bit
+        # CPython lays out bytes objects so that the raw character buffer
+        # starts at `id(obj) + bytes.__basicsize__ - 1` on 64-bit builds.
+        buf_offset = bytes.__basicsize__ - 1  # 33 on CPython 3.10-3.12 / 64-bit
         ctypes.memset(id(data) + buf_offset, 0, len(data))
-        # Verify the wipe in debug builds so any layout change is caught
-        # immediately rather than silently allowing key material to persist.
         assert not __debug__ or data == b"\x00" * len(data), (
-            "zero_bytes: post-wipe verification failed — "
+            "zero_bytes: post-wipe verification failed "
             "buf_offset calculation may be wrong for this Python build"
         )
     except Exception:
-        # Non-CPython runtime or layout mismatch — accept the limitation
-        # silently.  The caller still proceeds; this is best-effort only.
+        # Layout mismatch or unexpected CPython internal change — accept the
+        # limitation silently. The caller still proceeds; this is best-effort.
         pass
 
-# ── Argon2id key derivation ───────────────────────────────────────────────────
+# ── Parameter validators ──────────────────────────────────────────────────────
 
-def derive_key_argon2(
-    password: str | bytes,
-    *,
-    salt: bytes | None = None,
-    time_cost: int = ARGON2_TIME_COST,
-    memory_cost: int = ARGON2_MEMORY_COST,
-    parallelism: int = ARGON2_PARALLELISM,
-    hash_len: int = ARGON2_HASH_LEN,
-) -> DerivedKey:
-    if not password:
-        raise InputValidationError("Password must not be empty.")
-
+def _validate_argon2_params(
+    time_cost: int,
+    memory_cost: int,
+    parallelism: int,
+    hash_len: int,
+    salt: bytes | None,
+) -> None:
+    """Raise InputValidationError if any Argon2 parameter is out of range."""
     if salt is not None and len(salt) < ARGON2_SALT_LEN:
         raise InputValidationError(
             f"Argon2 salt must be at least {ARGON2_SALT_LEN} bytes; "
@@ -94,7 +117,6 @@ def derive_key_argon2(
             "Pass salt=None to have a cryptographically secure random salt "
             "generated automatically."
         )
-
     if not (1 <= time_cost <= ARGON2_MAX_TIME_COST):
         raise InputValidationError(
             f"Argon2 time_cost must be between 1 and {ARGON2_MAX_TIME_COST}; "
@@ -104,8 +126,8 @@ def derive_key_argon2(
         raise InputValidationError(
             f"Argon2 memory_cost must be between 8192 and {ARGON2_MAX_MEMORY_COST} KiB "
             f"(8 MiB – 2 GiB); received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
-            f"Note: memory_cost is expressed in KiB, not MiB — "
-            f"pass 65536 for 64 MiB (the recommended default)."
+            "Note: memory_cost is expressed in KiB, not MiB "
+            "pass 65536 for 64 MiB (the recommended default)."
         )
     if not (1 <= parallelism <= ARGON2_MAX_PARALLELISM):
         raise InputValidationError(
@@ -118,7 +140,53 @@ def derive_key_argon2(
             f"received {hash_len}."
         )
 
+def _validate_pbkdf2_params(
+    hash_algorithm: str,
+    iterations: int,
+    salt: bytes | None,
+) -> None:
+    """Raise InputValidationError if any PBKDF2 parameter is invalid."""
+    if hash_algorithm not in _PBKDF2_HASH_FACTORIES:
+        raise InputValidationError(
+            f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
+            f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
+        )
+    # Min-iterations lookup is safe here because hash_algorithm is confirmed valid above.
+    min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
+    if iterations < min_iters:
+        raise InputValidationError(
+            f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
+            f"(OWASP 2023 recommendation). "
+            f"Received: {iterations:,}."
+        )
+    if salt is not None and len(salt) < PBKDF2_SALT_LEN:
+        raise InputValidationError(
+            f"PBKDF2 salt must be at least {PBKDF2_SALT_LEN} bytes; "
+            f"received {len(salt)} byte(s). "
+            "Pass salt=None to have a cryptographically secure random salt "
+            "generated automatically."
+        )
+
+# ── Argon2id key derivation ───────────────────────────────────────────────────
+
+def derive_key_argon2(
+    password: str | bytes,
+    *,
+    salt: bytes | None = None,
+    time_cost: int = ARGON2_TIME_COST,
+    memory_cost: int = ARGON2_MEMORY_COST,
+    parallelism: int = ARGON2_PARALLELISM,
+    hash_len: int = ARGON2_HASH_LEN,
+) -> DerivedKey:
+    """Derive a key from *password* using Argon2id."""
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
+    _validate_argon2_params(time_cost, memory_cost, parallelism, hash_len, salt)
+
     try:
+        # Import is deferred so the toolkit degrades gracefully when argon2-cffi
+        # is not installed instead of failing at module import time.
         from argon2.low_level import Type as Argon2Type, hash_secret_raw  # type: ignore[import-untyped]
     except ImportError as exc:
         raise KeyDerivationError(
@@ -140,7 +208,6 @@ def derive_key_argon2(
             hash_len=hash_len,
             type=Argon2Type.ID,
         )
-        # pbkdf2_hash and pbkdf2_iterations remain None — not applicable to Argon2.
         return DerivedKey(key=key, salt=salt)
     except (InputValidationError, KeyDerivationError):
         raise
@@ -157,43 +224,20 @@ def derive_key_pbkdf2(
     key_len: int = PBKDF2_KEY_LEN,
     hash_algorithm: str = PBKDF2_HASH,
 ) -> DerivedKey:
+    """Derive a key from *password* using PBKDF2-HMAC."""
     if not password:
         raise InputValidationError("Password must not be empty.")
 
-    algo_cls = _PBKDF2_HASH_FACTORIES.get(hash_algorithm)
-    if algo_cls is None:
-        raise InputValidationError(
-            f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
-            f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
-        )
-
-    # Now that the hash is confirmed valid, the minimum-iterations lookup is safe
-    # (the key is guaranteed to be present) and the error message is accurate.
-    min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
-    if iterations < min_iters:
-        raise InputValidationError(
-            f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
-            f"(OWASP 2023 recommendation). "
-            f"Received: {iterations:,}."
-        )
-
-    if salt is not None and len(salt) < PBKDF2_SALT_LEN:
-        raise InputValidationError(
-            f"PBKDF2 salt must be at least {PBKDF2_SALT_LEN} bytes; "
-            f"received {len(salt)} byte(s). "
-            "Pass salt=None to have a cryptographically secure random salt "
-            "generated automatically."
-        )
-
-    algo = algo_cls()
+    _validate_pbkdf2_params(hash_algorithm, iterations, salt)
 
     if salt is None:
         salt = secrets.token_bytes(PBKDF2_SALT_LEN)
 
     try:
         password_bytes = password.encode() if isinstance(password, str) else password
+        algo_instance = _PBKDF2_HASH_FACTORIES[hash_algorithm]()
         kdf_obj = PBKDF2HMAC(
-            algorithm=algo,
+            algorithm=algo_instance,
             length=key_len,
             salt=salt,
             iterations=iterations,
