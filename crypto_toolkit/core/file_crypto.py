@@ -33,9 +33,11 @@ from crypto_toolkit.core.constants import (
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
 from crypto_toolkit.core.exceptions import (
+    CryptoToolkitError,
     DecryptionError,
     EncryptionError,
     FileOperationError,
+    InputValidationError,
 )
 from crypto_toolkit.core.kdf import (
     ARGON2_MAX_MEMORY_COST as _ARGON2_MAX_MEMORY_COST,
@@ -71,6 +73,12 @@ _PBKDF2_MAX_ITERATIONS: dict[str, int] = {
     "sha512":   3_500_000,
     "sha3_256": 3_000_000,
     "sha3_512": 1_500_000,
+}
+_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
+    "sha256":   600_000,
+    "sha512":   210_000,
+    "sha3_256": 200_000,
+    "sha3_512": 100_000,
 }
 
 # ── Header helpers ────────────────────────────────────────────────────────────
@@ -234,6 +242,8 @@ def _derive_key_from_header(
         time_cost, memory_cost, parallelism = struct.unpack(
             ARGON2_PARAMS_STRUCT, argon2_params_raw
         )
+
+        # Upper-bound DoS cap (pre-existing).
         if (
             time_cost > _DECRYPT_MAX_TIME_COST
             or memory_cost > _DECRYPT_MAX_MEMORY_COST
@@ -248,6 +258,16 @@ def _derive_key_from_header(
                 f"parallelism={parallelism}. "
                 "The file may originate from an untrusted or malicious source."
             )
+
+        if time_cost < 1 or memory_cost < 8192 or parallelism < 1:
+            raise DecryptionError(
+                f"File header Argon2 parameters are below the minimum allowed "
+                f"(time_cost≥1, memory_cost≥8192 KiB, parallelism≥1); "
+                f"received time_cost={time_cost}, memory_cost={memory_cost}, "
+                f"parallelism={parallelism}. "
+                "The file header is corrupt or has been tampered with."
+            )
+
         derived = derive_key_argon2(
             password,
             salt=salt,
@@ -262,6 +282,8 @@ def _derive_key_from_header(
                 "File header is corrupt PBKDF2 iteration count or hash "
                 "algorithm field is missing."
             )
+
+        # Upper-bound DoS cap (pre-existing).
         pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
         if pbkdf2_iterations > pbkdf2_max:
             raise DecryptionError(
@@ -270,6 +292,15 @@ def _derive_key_from_header(
                 f"{pbkdf2_hash!r}. "
                 "The file may originate from an untrusted or malicious source."
             )
+
+        pbkdf2_min = _PBKDF2_MIN_ITERATIONS.get(pbkdf2_hash, 1)
+        if pbkdf2_iterations < pbkdf2_min:
+            raise DecryptionError(
+                f"File header PBKDF2 iteration count {pbkdf2_iterations:,} is below "
+                f"the minimum allowed ({pbkdf2_min:,}) for {pbkdf2_hash!r}. "
+                "The file header is corrupt or has been tampered with."
+            )
+
         derived = derive_key_pbkdf2(
             password,
             salt=salt,
@@ -301,10 +332,11 @@ def _encrypt_stream(
     argon2_params: bytes | None,
 ) -> None:
     """Write an encrypted chunked stream from *src_path* to *dst_path*."""
-    if chunk_size <= 0:
-        raise EncryptionError(
-            f"chunk_size must be a positive integer; received {chunk_size}."
-        )
+    assert _MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE, (
+        f"_encrypt_stream pre-condition violated: chunk_size={chunk_size} is "
+        f"outside [{_MIN_CHUNK_SIZE}, {_MAX_CHUNK_SIZE}]. "
+        "Callers must call _validate_chunk_size before invoking this function."
+    )
 
     header_bytes = _build_header_bytes(
         salt, kdf_tag,
@@ -469,6 +501,9 @@ def encrypt_file_with_password(
     argon2_parallelism: int = ARGON2_PARALLELISM,
 ) -> None:
     """Encrypt *src_path* to *dst_path* using a password-derived key."""
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
     _assert_distinct_paths(src_path, dst_path, "encrypt file in place")
     _validate_chunk_size(chunk_size)
 
@@ -544,7 +579,7 @@ def decrypt_file(
             _decrypt_chunks(src, dst, AESGCM(key), header_bytes)
         tmp_path.replace(dst_path)
         success = True
-    except (DecryptionError, FileOperationError):
+    except CryptoToolkitError:
         raise
     except Exception as exc:
         raise DecryptionError(
@@ -560,6 +595,9 @@ def decrypt_file_with_password(
     password: str,
 ) -> None:
     """Decrypt a password-protected file encrypted with :func:`encrypt_file_with_password`."""
+    if not password:
+        raise InputValidationError("Password must not be empty.")
+
     _assert_distinct_paths(src_path, dst_path, "decrypt file in place")
 
     if not src_path.is_file():
@@ -593,7 +631,7 @@ def decrypt_file_with_password(
 
         tmp_path.replace(dst_path)
         success = True
-    except (DecryptionError, FileOperationError):
+    except CryptoToolkitError:
         raise
     except Exception as exc:
         raise DecryptionError(
