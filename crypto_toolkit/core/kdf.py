@@ -91,9 +91,9 @@ def zero_bytes(data: bytes) -> None:
         # starts at `id(obj) + bytes.__basicsize__ - 1` on 64-bit builds.
         buf_offset = bytes.__basicsize__ - 1  # 33 on CPython 3.10-3.12 / 64-bit
         ctypes.memset(id(data) + buf_offset, 0, len(data))
-        assert not __debug__ or data == b"\x00" * len(data), (
+        assert data == b"\x00" * len(data), (
             "zero_bytes: post-wipe verification failed "
-            "buf_offset calculation may be wrong for this Python build"
+            "buf_offset calculation may be wrong for this Python build."
         )
     except Exception:
         # Layout mismatch or unexpected CPython internal change — accept the
