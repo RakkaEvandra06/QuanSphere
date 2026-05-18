@@ -52,6 +52,12 @@ _PBKDF2_MAX_ITERATIONS: dict[str, int] = {
     "sha3_256":  3_000_000,
     "sha3_512":  1_500_000,
 }
+_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
+    "sha256":   600_000,
+    "sha512":   210_000,
+    "sha3_256": 200_000,
+    "sha3_512": 100_000,
+}
 
 # Both salts must be the same length so the PBE parser can use a single offset.
 if ARGON2_SALT_LEN != PBKDF2_SALT_LEN:
@@ -248,6 +254,8 @@ def password_decrypt(token: str, password: str) -> bytes:
             time_cost, memory_cost, parallelism = struct.unpack(
                 ARGON2_PARAMS_STRUCT, argon2_params_raw
             )
+
+            # Upper-bound DoS cap (pre-existing).
             if (
                 time_cost > _DECRYPT_MAX_TIME_COST
                 or memory_cost > _DECRYPT_MAX_MEMORY_COST
@@ -262,6 +270,16 @@ def password_decrypt(token: str, password: str) -> bytes:
                     f"parallelism={parallelism}. "
                     "The token may originate from an untrusted or malicious source."
                 )
+
+            if time_cost < 1 or memory_cost < 8192 or parallelism < 1:
+                raise DecryptionError(
+                    f"Envelope Argon2 parameters are below the minimum allowed "
+                    f"(time_cost≥1, memory_cost≥8192 KiB, parallelism≥1); "
+                    f"received time_cost={time_cost}, memory_cost={memory_cost}, "
+                    f"parallelism={parallelism}. "
+                    "The token is corrupt or originates from a malicious source."
+                )
+
             nonce = raw[offset : offset + AES_NONCE_SIZE]
             offset += AES_NONCE_SIZE
             ciphertext = raw[offset:]
@@ -285,6 +303,7 @@ def password_decrypt(token: str, password: str) -> bytes:
             (pbkdf2_iterations,) = struct.unpack(">I", raw[offset : offset + 4])
             offset += 4  # consume 4-byte iterations field
 
+            # Upper-bound DoS cap (pre-existing).
             pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
             if pbkdf2_iterations > pbkdf2_max:
                 raise DecryptionError(
@@ -292,6 +311,15 @@ def password_decrypt(token: str, password: str) -> bytes:
                     f"maximum allowed ({pbkdf2_max:,}) for {pbkdf2_hash!r}. "
                     "The token may originate from an untrusted or malicious source."
                 )
+
+            pbkdf2_min = _PBKDF2_MIN_ITERATIONS.get(pbkdf2_hash, 1)
+            if pbkdf2_iterations < pbkdf2_min:
+                raise DecryptionError(
+                    f"PBKDF2 iteration count {pbkdf2_iterations:,} is below the "
+                    f"minimum allowed ({pbkdf2_min:,}) for {pbkdf2_hash!r}. "
+                    "The token is corrupt or originates from a malicious source."
+                )
+
             nonce = raw[offset : offset + AES_NONCE_SIZE]
             offset += AES_NONCE_SIZE
             ciphertext = raw[offset:]
