@@ -76,9 +76,12 @@ def _parse_hex(value: str, label: str = "hex value") -> bytes:
     try:
         return bytes.fromhex(value)
     except ValueError:
+        preview = (value[:8] + "...") if len(value) > 8 else value
         output.error(
-            f"{label} invalid: must be a hexadecimal string "
-            f"(characters 0-9 and a-f). Got: {value!r}"
+            f"{label} is not a valid hexadecimal string "
+            f"(expected characters 0-9 and a-f; received {len(value)} character(s) "
+            f"starting with {preview!r}). "
+            "Ensure you are passing a hex-encoded key, not a raw password or base64 value."
         )
         raise typer.Exit(1)
 
@@ -142,26 +145,45 @@ def _read_key_file(path: Path, label: str = "Key file") -> bytes:
 def _atomic_write(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     """Write *data* to *path* atomically via a sibling temp file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Random suffix prevents collisions on concurrent writes.
     tmp = path.with_suffix(path.suffix + f".{secrets.token_hex(4)}.tmp")
+
+    fd: int = -1
+    fh = None
     try:
         # O_EXCL ensures no other process can race to create the same temp path.
         fd = _os.open(tmp, _os.O_CREAT | _os.O_WRONLY | _os.O_EXCL, mode)
-        try:
-            with _os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-        except Exception:
-            # fdopen closes fd on context-manager exit; if fdopen itself raises,
-            # fd is still open — close it explicitly.
+
+        # Transfer ownership of fd to the file object.  After this line we must
+        # never call _os.close(fd) — only fh.close() is valid.
+        fh = _os.fdopen(fd, "wb")
+        fd = -1  # sentinel: fd now owned by fh; do NOT close it via _os.close
+
+        fh.write(data)
+        fh.close()   # explicit close before rename so errors surface here
+        fh = None    # mark as already closed
+
+        tmp.replace(path)  # atomic on POSIX; best-effort on Windows
+
+    except Exception as exc:
+        # Close whichever resource still holds the descriptor.
+        if fh is not None:
+            # fdopen succeeded but write or close raised — fh owns the fd.
+            try:
+                fh.close()
+            except OSError:
+                pass
+        elif fd >= 0:
+            # fdopen itself failed — fd was never wrapped; close the raw descriptor.
             try:
                 _os.close(fd)
             except OSError:
                 pass
-            raise
-        tmp.replace(path)  # atomic on POSIX; best-effort on Windows
-    except OSError as exc:
+
         tmp.unlink(missing_ok=True)
-        raise FileOperationError(f"Failed to write file '{path}': {exc}") from exc
+
+        if isinstance(exc, OSError):
+            raise FileOperationError(f"Failed to write file '{path}': {exc}") from exc
+        raise
 
 def _write_file(path: Path, data: bytes, *, mode: int = 0o644) -> None:
     """Write *data* to *path* atomically, then log the destination path."""
@@ -404,7 +426,7 @@ def generate_key(
         ),
     ),
     output_file: Optional[Path] = typer.Option(
-        None, "--output-file", help="Write token/password to a file (for token/password types)."
+        None, "--output-file", help="Write token/password/symmetric key to a file."
     ),
 ) -> None:
     """Generate cryptographic keys (symmetric, RSA-4096, ECC P-256, X25519, Ed25519, token, password)."""
@@ -426,8 +448,10 @@ def generate_key(
 
     if key_type == KeyType.symmetric:
         key = random_gen.generate_key(size)
-        if output_dir:
-            _write_file(output_dir / "symmetric.key", key.hex().encode())
+        if output_file:
+            _write_file(output_file, key.hex().encode(), mode=0o600)
+        elif output_dir:
+            _write_file(output_dir / "symmetric.key", key.hex().encode(), mode=0o600)
         else:
             output.result("Symmetric Key (hex)", key.hex())
 
