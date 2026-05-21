@@ -31,6 +31,8 @@ from crypto_toolkit.core.constants import (
     FILE_MAX_BLOCK_SIZE,
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
+    PBKDF2_MAX_ITERATIONS as _PBKDF2_MAX_ITERATIONS,
+    PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.exceptions import (
     CryptoToolkitError,
@@ -46,7 +48,8 @@ from crypto_toolkit.core.kdf import (
     DerivedKey,
     derive_key_argon2,
     derive_key_pbkdf2,
-    zero_bytes,
+    zero_bytes,   # still needed by zero_bytes(shared_secret) if called elsewhere
+    zero_key,     # correct eraser for bytearray — used for derived.key
 )
 
 _HEADER_SALT_LEN: int = ARGON2_SALT_LEN
@@ -60,26 +63,13 @@ _KDF_TAG_PBKDF2: bytes = b"\x02" # key derived via PBKDF2
 # EOF sentinel block layout: nonce (12) + 8-byte payload + tag (16) = 36 bytes.
 _EOF_BLOCK_LEN: int = AES_NONCE_SIZE + 8 + AES_TAG_SIZE
 
-_MIN_CHUNK_SIZE: int = 4 * 1024       # 4 KiB — avoids degenerate overhead
+_MIN_CHUNK_SIZE: int = 4 * 1024        # 4 KiB — avoids degenerate overhead
 _MAX_CHUNK_SIZE: int = FILE_CHUNK_SIZE # 64 KiB — matches plaintext read size
 
 # Decryption-side caps prevent DoS from hostile headers.
 _DECRYPT_MAX_TIME_COST: int = _ARGON2_MAX_TIME_COST
 _DECRYPT_MAX_MEMORY_COST: int = _ARGON2_MAX_MEMORY_COST
 _DECRYPT_MAX_PARALLELISM: int = _ARGON2_MAX_PARALLELISM
-
-_PBKDF2_MAX_ITERATIONS: dict[str, int] = {
-    "sha256":  10_000_000,
-    "sha512":   3_500_000,
-    "sha3_256": 3_000_000,
-    "sha3_512": 1_500_000,
-}
-_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
-    "sha256":   600_000,
-    "sha512":   210_000,
-    "sha3_256": 200_000,
-    "sha3_512": 100_000,
-}
 
 # ── Header helpers ────────────────────────────────────────────────────────────
 
@@ -231,6 +221,7 @@ def _derive_key_from_header(
     argon2_params_raw: bytes | None,
 ) -> tuple[DerivedKey, bytes | None]:
     """Derive the decryption key and return ``(derived_key, pbkdf2_hash_tag_for_aad)``."""
+    derived: DerivedKey
     pbkdf2_hash_tag_for_aad: bytes | None = None
 
     if kdf_tag == _KDF_TAG_ARGON2:
@@ -332,11 +323,12 @@ def _encrypt_stream(
     argon2_params: bytes | None,
 ) -> None:
     """Write an encrypted chunked stream from *src_path* to *dst_path*."""
-    assert _MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE, (
-        f"_encrypt_stream pre-condition violated: chunk_size={chunk_size} is "
-        f"outside [{_MIN_CHUNK_SIZE}, {_MAX_CHUNK_SIZE}]. "
-        "Callers must call _validate_chunk_size before invoking this function."
-    )
+    if not (_MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE):
+        raise EncryptionError(
+            f"_encrypt_stream pre-condition violated: chunk_size={chunk_size} is "
+            f"outside [{_MIN_CHUNK_SIZE}, {_MAX_CHUNK_SIZE}]. "
+            "Callers must call _validate_chunk_size before invoking this function."
+        )
 
     header_bytes = _build_header_bytes(
         salt, kdf_tag,
@@ -532,6 +524,7 @@ def encrypt_file_with_password(
         argon2_params = None
         pbkdf2_hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash or "")
         if pbkdf2_hash_tag is None:
+            zero_key(derived.key)
             raise EncryptionError(
                 f"Cannot encode PBKDF2 hash {derived.pbkdf2_hash!r} into file header."
             )
@@ -545,8 +538,7 @@ def encrypt_file_with_password(
             argon2_params=argon2_params,
         )
     finally:
-        # Best-effort wipe — runs whether _encrypt_stream succeeds or raises.
-        zero_bytes(derived.key)
+        zero_key(derived.key)
 
 def decrypt_file(
     src_path: Path,
@@ -635,10 +627,10 @@ def decrypt_file_with_password(
         raise
     except Exception as exc:
         raise DecryptionError(
-            f"File decryption failed — incorrect password or corrupted data: {exc}"
+            f"File decryption failed, incorrect password or corrupted data: {exc}"
         ) from exc
     finally:
         if derived is not None:
-            zero_bytes(derived.key)
+            zero_key(derived.key)
         if not success:
             _cleanup_tmp(tmp_path)
