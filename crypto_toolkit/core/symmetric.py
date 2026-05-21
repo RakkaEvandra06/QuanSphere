@@ -78,7 +78,7 @@ def _aead_decrypt(
         return cipher.decrypt(nonce, ciphertext, associated_data)
     except Exception as exc:
         raise DecryptionError(
-            "Decryption failed incorrect key, corrupted data, or mismatched "
+            "Decryption failed, incorrect key, corrupted data, or mismatched "
             "associated_data (ensure the same value used during encryption is "
             "supplied here, including None if none was used)."
         ) from exc
@@ -112,7 +112,6 @@ def encrypt(
 
         header = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag
         aad_internal = _build_aad(header, associated_data)
-
         ciphertext = _make_cipher(algo_tag, key).encrypt(nonce, plaintext, aad_internal)
         envelope = header + nonce + ciphertext
         return base64.urlsafe_b64encode(envelope).decode()
