@@ -77,9 +77,16 @@ def ed25519_private_key_to_pem(
     password: bytes | None = None,
 ) -> bytes:
     """Serialise *key* to PKCS8 PEM, optionally encrypted with *password*."""
-    encryption = (
+    if password is not None and len(password) == 0:
+        raise InputValidationError(
+            "PEM encryption password must not be empty (received b''). "
+            "Pass a non-empty bytes secret to encrypt the PEM, or pass "
+            "password=None to produce an unencrypted PEM."
+        )
+
+    encryption: serialization.KeySerializationEncryption = (
         serialization.BestAvailableEncryption(password)
-        if password
+        if password is not None
         else serialization.NoEncryption()
     )
     return key.private_bytes(
@@ -109,7 +116,7 @@ def load_ed25519_private_key(
         raise
     except Exception as exc:
         raise InputValidationError(
-            "Failed to load Ed25519 private key wrong password or corrupt PEM."
+            "Failed to load Ed25519 private key, wrong password or corrupt PEM."
         ) from exc
 
 def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
@@ -123,7 +130,7 @@ def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
         raise
     except Exception as exc:
         raise InputValidationError(
-            "Failed to load Ed25519 public key corrupt PEM."
+            "Failed to load Ed25519 public key, corrupt PEM."
         ) from exc
 
 # ── RSA-PSS sign / verify ─────────────────────────────────────────────────────
@@ -144,7 +151,7 @@ def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> b
         return False
     except (ValueError, TypeError) as exc:
         raise SignatureError(
-            "RSA-PSS verification received malformed input "
+            "RSA-PSS verification received malformed input, "
             "the signature bytes or key may be corrupt."
         ) from exc
     except Exception as exc:
