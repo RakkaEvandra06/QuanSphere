@@ -39,6 +39,10 @@ from crypto_toolkit.core.constants import (
     AEAD_MIN_CIPHERTEXT,
     AES_KEY_SIZE,
     AES_NONCE_SIZE,
+    ASYM_MAGIC,
+    ASYM_ECC_TAG,
+    ASYM_X25519_TAG,
+    ENVELOPE_VERSION,
     RSA_KEY_SIZE,
     RSA_PUBLIC_EXPONENT,
 )
@@ -57,9 +61,19 @@ _ECC_UNCOMPRESSED_PUB_LEN: int = 65
 # X25519 raw public key is always 32 bytes (RFC 7748 §6.1).
 _X25519_PUB_LEN: int = 32
 
+# Header layout: ASYM_MAGIC (8 B) + ENVELOPE_VERSION (1 B) + algo_tag (1 B) = 10 bytes.
+# Having a fixed-length constant avoids recomputing len() at every call site.
+_ASYM_ECC_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_ECC_TAG
+_ASYM_X25519_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_X25519_TAG
+_ASYM_HEADER_LEN: int = len(_ASYM_ECC_HEADER)  # 10 — same for both schemes
+
 # Minimum envelope byte lengths.
-_ECC_MIN_ENVELOPE: int = _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
-_X25519_MIN_ENVELOPE: int = _X25519_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
+_ECC_MIN_ENVELOPE: int = (
+    _ASYM_HEADER_LEN + _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
+)
+_X25519_MIN_ENVELOPE: int = (
+    _ASYM_HEADER_LEN + _X25519_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
+)
 
 # HKDF domain separators keep ECC and X25519 key streams cryptographically independent.
 _ECC_HKDF_INFO: bytes = b"crypto-toolkit-ecc-hybrid"
@@ -82,6 +96,7 @@ _SUPPORTED_PUBLIC_KEY_TYPES: tuple[type, ...] = (
 
 _VALID_RSA_KEY_SIZES: frozenset[int] = frozenset({2048, 3072, 4096})
 _MIN_RSA_KEY_SIZE: int = 2048
+_SHA256_DIGEST_SIZE: int = 32
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -158,9 +173,15 @@ def private_key_to_pem(
     password: bytes | None = None,
 ) -> bytes:
     """Serialise *key* to PKCS8 PEM, optionally encrypted with *password*."""
-    encryption = (
+    if password is not None and len(password) == 0:
+        raise InputValidationError(
+            "PEM encryption password must not be empty (received b''). "
+            "Pass a non-empty bytes secret to encrypt the PEM, or pass "
+            "password=None to produce an unencrypted PEM."
+        )
+    encryption: serialization.KeySerializationEncryption = (
         serialization.BestAvailableEncryption(password)
-        if password
+        if password is not None
         else serialization.NoEncryption()
     )
     return key.private_bytes(
@@ -247,6 +268,19 @@ def load_public_key(
 
 def rsa_encrypt(plaintext: bytes, public_key: RSAPublicKey) -> bytes:
     """Encrypt *plaintext* with *public_key* using RSA-OAEP / SHA-256."""
+    if not plaintext:
+        raise InputValidationError(
+            "Plaintext must not be empty. "
+            "RSA-OAEP encryption of zero bytes carries no useful information."
+        )
+    max_plaintext_len: int = (public_key.key_size // 8) - 2 * _SHA256_DIGEST_SIZE - 2
+    if len(plaintext) > max_plaintext_len:
+        raise InputValidationError(
+            f"Plaintext is {len(plaintext)} bytes, but RSA-{public_key.key_size}-OAEP/"
+            f"SHA-256 can encrypt at most {max_plaintext_len} bytes. "
+            "For larger payloads use hybrid encryption: ecc_hybrid_encrypt or "
+            "x25519_hybrid_encrypt, which impose no meaningful size limit."
+        )
     try:
         return public_key.encrypt(plaintext, _make_oaep_padding())
     except ValueError as exc:
@@ -277,6 +311,12 @@ def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
 
 def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) -> bytes:
     """Encrypt *plaintext* for *recipient_pub* using ephemeral ECDH + AES-GCM."""
+    if not plaintext:
+        raise InputValidationError(
+            "Plaintext must not be empty. "
+            "Encrypting zero bytes produces a ciphertext containing only the "
+            "authentication tag and carries no useful information."
+        )
     _assert_secp256r1(recipient_pub, "hybrid encryption")
 
     shared_secret: bytes | None = None
@@ -304,7 +344,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
         ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
 
-        return ephemeral_pub_bytes + nonce + ciphertext
+        return _ASYM_ECC_HEADER + ephemeral_pub_bytes + nonce + ciphertext
     except InputValidationError:
         raise
     except Exception as exc:
@@ -319,13 +359,27 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
     """Decrypt an envelope produced by :func:`ecc_hybrid_encrypt`."""
     _assert_secp256r1(private_key, "hybrid decryption")
 
+    # FIX F-03: length check now accounts for the 10-byte header.
     if len(envelope) < _ECC_MIN_ENVELOPE:
         raise DecryptionError(
             f"ECC envelope is too short ({len(envelope)} bytes); "
             f"minimum expected is {_ECC_MIN_ENVELOPE} bytes."
         )
 
-    ephemeral_pub_bytes = envelope[:_ECC_UNCOMPRESSED_PUB_LEN]
+    magic_len = len(ASYM_MAGIC)
+    if envelope[:magic_len] != ASYM_MAGIC:
+        raise DecryptionError("Envelope format not recognised (missing ASYM_MAGIC).")
+    if envelope[magic_len : magic_len + 1] != ENVELOPE_VERSION:
+        raise DecryptionError("Envelope version not supported.")
+    if envelope[magic_len + 1 : magic_len + 2] != ASYM_ECC_TAG:
+        raise DecryptionError(
+            "Envelope algorithm tag mismatch: expected ECC (0x01). "
+            "Ensure you are using ecc_hybrid_decrypt for ECC-encrypted data, "
+            "not x25519_hybrid_decrypt."
+        )
+
+    offset = _ASYM_HEADER_LEN
+    ephemeral_pub_bytes = envelope[offset : offset + _ECC_UNCOMPRESSED_PUB_LEN]
     if ephemeral_pub_bytes[0] != _UNCOMPRESSED_POINT_PREFIX:
         raise DecryptionError(
             f"ECC envelope contains an invalid ephemeral public key "
@@ -337,8 +391,9 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
     shared_secret: bytes | None = None
     aes_key: bytes | None = None
     try:
-        nonce = envelope[_ECC_UNCOMPRESSED_PUB_LEN : _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE]
-        ciphertext = envelope[_ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE :]
+        nonce_start = offset + _ECC_UNCOMPRESSED_PUB_LEN
+        nonce = envelope[nonce_start : nonce_start + AES_NONCE_SIZE]
+        ciphertext = envelope[nonce_start + AES_NONCE_SIZE :]
 
         ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(
             ec.SECP256R1(), ephemeral_pub_bytes
@@ -376,6 +431,12 @@ def x25519_hybrid_encrypt(
     recipient_pub: x25519.X25519PublicKey,
 ) -> bytes:
     """Encrypt *plaintext* for *recipient_pub* using ephemeral X25519 + AES-GCM."""
+    if not plaintext:
+        raise InputValidationError(
+            "Plaintext must not be empty. "
+            "Encrypting zero bytes produces a ciphertext containing only the "
+            "authentication tag and carries no useful information."
+        )
     shared_secret: bytes | None = None
     aes_key: bytes | None = None
     try:
@@ -410,7 +471,7 @@ def x25519_hybrid_encrypt(
         # key as AEAD AAD, mirroring the ECC hybrid pattern.
         ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
 
-        return ephemeral_pub_bytes + nonce + ciphertext
+        return _ASYM_X25519_HEADER + ephemeral_pub_bytes + nonce + ciphertext
     except (EncryptionError, InputValidationError):
         raise
     except Exception as exc:
@@ -432,12 +493,26 @@ def x25519_hybrid_decrypt(
             f"minimum expected is {_X25519_MIN_ENVELOPE} bytes."
         )
 
+    magic_len = len(ASYM_MAGIC)
+    if envelope[:magic_len] != ASYM_MAGIC:
+        raise DecryptionError("Envelope format not recognised (missing ASYM_MAGIC).")
+    if envelope[magic_len : magic_len + 1] != ENVELOPE_VERSION:
+        raise DecryptionError("Envelope version not supported.")
+    if envelope[magic_len + 1 : magic_len + 2] != ASYM_X25519_TAG:
+        raise DecryptionError(
+            "Envelope algorithm tag mismatch: expected X25519 (0x02). "
+            "Ensure you are using x25519_hybrid_decrypt for X25519-encrypted data, "
+            "not ecc_hybrid_decrypt."
+        )
+
     shared_secret: bytes | None = None
     aes_key: bytes | None = None
     try:
-        ephemeral_pub_bytes = envelope[:_X25519_PUB_LEN]
-        nonce = envelope[_X25519_PUB_LEN : _X25519_PUB_LEN + AES_NONCE_SIZE]
-        ciphertext = envelope[_X25519_PUB_LEN + AES_NONCE_SIZE :]
+        offset = _ASYM_HEADER_LEN
+        ephemeral_pub_bytes = envelope[offset : offset + _X25519_PUB_LEN]
+        nonce_start = offset + _X25519_PUB_LEN
+        nonce = envelope[nonce_start : nonce_start + AES_NONCE_SIZE]
+        ciphertext = envelope[nonce_start + AES_NONCE_SIZE :]
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
         shared_secret = private_key.exchange(ephemeral_pub)
@@ -461,7 +536,8 @@ def x25519_hybrid_decrypt(
 
         # AAD must match what x25519_hybrid_encrypt used — ephemeral_pub_bytes.
         return AESGCM(aes_key).decrypt(nonce, ciphertext, ephemeral_pub_bytes)
-    except DecryptionError:
+
+    except (InputValidationError, DecryptionError):
         raise
     except Exception as exc:
         raise DecryptionError(
