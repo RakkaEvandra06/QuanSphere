@@ -31,6 +31,8 @@ __all__ = [
     "PBKDF2_SALT_LEN",
     "PBKDF2_HASH_TO_TAG",
     "PBKDF2_TAG_TO_HASH",
+    "PBKDF2_MIN_ITERATIONS",
+    "PBKDF2_MAX_ITERATIONS",
     # File encryption
     "FILE_CHUNK_SIZE",
     "FILE_MAX_BLOCK_SIZE",
@@ -40,6 +42,8 @@ __all__ = [
     "FILE_ENC_MAGIC",
     "FILE_ENC_VERSION",
     "ASYM_MAGIC",
+    "ASYM_ECC_TAG",
+    "ASYM_X25519_TAG",
     "PBE_MAGIC",
 ]
 
@@ -104,13 +108,27 @@ PBKDF2_HASH_TO_TAG: dict[str, bytes] = {
 }
 PBKDF2_TAG_TO_HASH: dict[bytes, str] = {v: k for k, v in PBKDF2_HASH_TO_TAG.items()}
 
+PBKDF2_MIN_ITERATIONS: dict[str, int] = {
+    "sha256":   600_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
+    "sha512":   210_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
+    "sha3_256": 200_000,   # SHA3-256 is ~3× slower than SHA-256 per iteration
+    "sha3_512": 100_000,   # SHA3-512 is ~2× slower than SHA-512 per iteration
+}
+
+PBKDF2_MAX_ITERATIONS: dict[str, int] = {
+    "sha256":  10_000_000,
+    "sha512":   3_500_000,
+    "sha3_256": 3_000_000,
+    "sha3_512": 1_500_000,
+}
+
 # ── File encryption ───────────────────────────────────────────────────────────
 
 # Maximum plaintext bytes read per encryption pass (write side).
 FILE_CHUNK_SIZE: int = 64 * 1024  # 64 KiB
 
 # Maximum encoded block size on the decryption side:
-#   plaintext chunk (64 KiB) + nonce (12 B) + GCM tag (16 B) = 65 564 bytes.
+# plaintext chunk (64 KiB) + nonce (12 B) + GCM tag (16 B) = 65 564 bytes.
 FILE_MAX_BLOCK_SIZE: int = FILE_CHUNK_SIZE + AES_NONCE_SIZE + AES_TAG_SIZE
 
 # ── Envelope format markers ───────────────────────────────────────────────────
@@ -120,4 +138,7 @@ SYMMETRIC_MAGIC: bytes = b"CTK-SYM"
 FILE_ENC_MAGIC: bytes = b"CTK-FILE"
 FILE_ENC_VERSION: bytes = b"\x02"    # file-encryption envelope version (separate from ENVELOPE_VERSION)
 ASYM_MAGIC: bytes = b"CTK-ASYM"
+ASYM_ECC_TAG: bytes = b"\x01"
+ASYM_X25519_TAG: bytes = b"\x02"
+
 PBE_MAGIC: bytes = b"CTK-PBE"
