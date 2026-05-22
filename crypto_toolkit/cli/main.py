@@ -30,7 +30,7 @@ from crypto_toolkit.core.exceptions import (
     FileOperationError,
     InputValidationError,
 )
-from crypto_toolkit.core.kdf import PBKDF2_SUPPORTED_HASHES
+from crypto_toolkit.core.kdf import PBKDF2_SUPPORTED_HASHES, zero_bytes
 
 app = typer.Typer(
     name="crypto-toolkit",
@@ -49,6 +49,8 @@ _MIN_PASSWORD_LENGTH = 12
 
 # Key types that produce a private+public pair written into a directory.
 _ASYMMETRIC_TYPES = frozenset({"rsa", "ecc", "x25519", "ed25519"})
+
+_MAX_INLINE_BYTES: int = 64 * 1024 * 1024  # 64 MiB
 
 def _handle_error(exc: Exception) -> None:
     """Translate a toolkit exception into a user-friendly CLI message, then exit."""
@@ -85,6 +87,21 @@ def _parse_hex(value: str, label: str = "hex value") -> bytes:
         )
         raise typer.Exit(1)
 
+def _read_stdin_bounded(context_label: str) -> bytes:
+    """Read at most *_MAX_INLINE_BYTES* from stdin; exit with an error if the
+    stream is larger."""
+    data = sys.stdin.buffer.read(_MAX_INLINE_BYTES + 1)
+    if len(data) > _MAX_INLINE_BYTES:
+        output.error(
+            f"stdin data exceeds the {_MAX_INLINE_BYTES // (1024 * 1024)} MiB "
+            f"limit for in-memory {context_label}. "
+            "Use [bold]encrypt-file[/bold] / [bold]hash --file[/bold] for large "
+            "inputs — they process data in 64 KiB chunks without loading the "
+            "entire file into memory."
+        )
+        raise typer.Exit(1)
+    return data
+
 def _read_plaintext(
     plaintext_arg: Optional[str],
     stdin_flag: bool,
@@ -97,13 +114,25 @@ def _read_plaintext(
             "and the file will be ignored."
         )
     if stdin_flag:
-        return sys.stdin.buffer.read()
+        return _read_stdin_bounded("encryption")
     if input_file:
         if not input_file.is_file():
             output.error(f"Input file not found: {input_file}")
             raise typer.Exit(1)
         try:
+            file_size = input_file.stat().st_size
+            if file_size > _MAX_INLINE_BYTES:
+                output.error(
+                    f"Input file is {file_size // (1024 * 1024)} MiB, which exceeds "
+                    f"the {_MAX_INLINE_BYTES // (1024 * 1024)} MiB limit for "
+                    "in-memory encryption. "
+                    "Use [bold]encrypt-file[/bold] for large files, it processes "
+                    "data in 64 KiB chunks without loading the entire file into memory."
+                )
+                raise typer.Exit(1)
             return input_file.read_bytes()
+        except typer.Exit:
+            raise
         except OSError as exc:
             output.error(f"Cannot read input file '{input_file}': {exc}")
             raise typer.Exit(1)
@@ -159,15 +188,28 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o644) -> None:
         fd = -1  # sentinel: fd now owned by fh; do NOT close it via _os.close
 
         fh.write(data)
+
+        fh.flush()
+        _os.fsync(fh.fileno())
+
         fh.close()   # explicit close before rename so errors surface here
         fh = None    # mark as already closed
 
         tmp.replace(path)  # atomic on POSIX; best-effort on Windows
 
+        try:
+            dir_fd = _os.open(str(path.parent), _os.O_RDONLY)
+            try:
+                _os.fsync(dir_fd)
+            finally:
+                _os.close(dir_fd)
+        except OSError:
+            pass  # non-POSIX or unsupported filesystem — accept the limitation
+
     except Exception as exc:
         # Close whichever resource still holds the descriptor.
         if fh is not None:
-            # fdopen succeeded but write or close raised — fh owns the fd.
+            # fdopen succeeded but write, flush, fsync, or close raised — fh owns fd.
             try:
                 fh.close()
             except OSError:
@@ -195,7 +237,7 @@ def _write_output(data: str | bytes, output_file: Optional[Path], label: str) ->
     raw: bytes = data.encode() if isinstance(data, str) else data
 
     if output_file:
-        _atomic_write(output_file, raw)
+        _atomic_write(output_file, raw, mode=0o600)
         output.success(f"Output written to: {output_file}")
         return
 
@@ -236,6 +278,29 @@ def _resolve_password(
         raise typer.Exit(1)
 
     return password
+
+def _resolve_key_password(
+    key_password: Optional[str],
+    prompt_key_password: bool,
+    *,
+    confirm: bool = False,
+) -> Optional[bytes]:
+    """Return the PEM encryption password as bytes, or None if not set."""
+    if prompt_key_password:
+        pwd = typer.prompt(
+            "Key password",
+            hide_input=True,
+            confirmation_prompt=confirm,
+        )
+        return pwd.encode() if pwd else None
+    if key_password:
+        output.warn(
+            "Key password provided as a CLI argument, it may appear in shell "
+            "history and the process list. "
+            "Use [bold]--prompt-key-password[/bold] to avoid this."
+        )
+        return key_password.encode()
+    return None
 
 def _write_asymmetric_keypair(
     priv_pem: bytes,
@@ -298,11 +363,15 @@ def encrypt(
     if prompt_password or password:
         resolved = _resolve_password(password, prompt_password, confirm=True)
         if algorithm != SymAlgo.aes_gcm:
-            output.warn(
-                f"[bold]--algo {algorithm.value}[/bold] is ignored when "
-                "[bold]--password[/bold] is used. Password-based encryption "
-                "always uses AES-256-GCM via the PBE path."
+            output.error(
+                f"[bold]--algo {algorithm.value!r}[/bold] cannot be combined with "
+                "[bold]--password[/bold]. "
+                "Password-based encryption always uses AES-256-GCM via the PBE path. "
+                "To use ChaCha20-Poly1305, omit [bold]--password[/bold] and supply "
+                "a raw 32-byte key with [bold]--key[/bold] instead."
             )
+            raise typer.Exit(1)
+
         token = pbe.password_encrypt(data, resolved)
         _write_output(token, output_file, "Encrypted (PBE)")
         return
@@ -377,7 +446,8 @@ def hash_cmd(
         digest = hashing.hash_file(file, algorithm)
         output.result(f"{algorithm.upper()} ({file.name})", digest)
     elif stdin:
-        digest = hashing.hash_data(sys.stdin.buffer.read(), algorithm)
+        raw = _read_stdin_bounded("hashing")
+        digest = hashing.hash_data(raw, algorithm)
         output.result(f"{algorithm.upper()} (stdin)", digest)
     elif data:
         digest = hashing.hash_data(data.encode(), algorithm)
@@ -390,7 +460,8 @@ def hash_cmd(
                 "when finished, or use [bold]--file[/bold] / [bold]--stdin[/bold] "
                 "explicitly."
             )
-        digest = hashing.hash_data(sys.stdin.buffer.read(), algorithm)
+        raw = _read_stdin_bounded("hashing")
+        digest = hashing.hash_data(raw, algorithm)
         output.result(f"{algorithm.upper()} (stdin)", digest)
 
 # ── generate-key ──────────────────────────────────────────────────────────────
@@ -414,8 +485,19 @@ def generate_key(
         None, "--out", "-o", help="Write key to this directory."
     ),
     key_password: Optional[str] = typer.Option(
-        None, "--key-password", help="Encrypt the private key with this password.",
+        None,
+        "--key-password",
+        help=(
+            "Encrypt the private key with this password. "
+            "Warning: visible in process list and shell history. "
+            "Prefer [bold]--prompt-key-password[/bold] for sensitive keys."
+        ),
         hide_input=True,
+    ),
+    prompt_key_password: bool = typer.Option(
+        False,
+        "--prompt-key-password",
+        help="Interactively prompt for the private key encryption password.",
     ),
     size: int = typer.Option(
         32,
@@ -444,7 +526,11 @@ def generate_key(
                 "(RSA-4096, ECC P-256, X25519 32-byte, Ed25519 32-byte)."
             )
 
-    pwd_bytes = key_password.encode() if key_password else None
+    pwd_bytes = _resolve_key_password(
+        key_password,
+        prompt_key_password,
+        confirm=True,
+    )
 
     if key_type == KeyType.symmetric:
         key = random_gen.generate_key(size)
@@ -458,7 +544,7 @@ def generate_key(
     elif key_type == KeyType.token:
         tok = random_gen.generate_token(size)
         if output_file:
-            _write_file(output_file, tok.encode())
+            _write_file(output_file, tok.encode(), mode=0o600)
         else:
             output.result("Secure Token", tok)
 
@@ -471,7 +557,7 @@ def generate_key(
             raise typer.Exit(1)
         pwd = random_gen.generate_password(size)
         if output_file:
-            _write_file(output_file, pwd.encode())
+            _write_file(output_file, pwd.encode(), mode=0o600)
         else:
             output.result("Generated Password", pwd)
 
@@ -806,9 +892,11 @@ def derive_key(
     else:
         derived = kdf.derive_key_argon2(resolved, salt=salt)
         algo_label = "Argon2id"
-
-    output.result(f"Derived Key ({algo_label})", derived.key.hex())
-    output.result("Salt (save this for re-derivation)", derived.salt.hex())
+    try:
+        output.result(f"Derived Key ({algo_label})", derived.key.hex())
+        output.result("Salt (save this for re-derivation)", derived.salt.hex())
+    finally:
+        zero_bytes(derived.key)
 
 # ── random ────────────────────────────────────────────────────────────────────
 
@@ -841,7 +929,6 @@ def random_cmd(
         # Defensive: unreachable as long as RandomKind is kept in sync.
         output.error(f"Unknown random kind: {kind!r}")
         raise typer.Exit(1)
-
 
 if __name__ == "__main__":
     app()
