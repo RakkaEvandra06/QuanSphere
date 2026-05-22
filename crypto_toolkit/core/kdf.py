@@ -6,6 +6,7 @@ __all__ = [
     "derive_key_pbkdf2",
     "PBKDF2_SUPPORTED_HASHES",
     "zero_bytes",
+    "zero_key",
     "ARGON2_MAX_TIME_COST",
     "ARGON2_MAX_MEMORY_COST",
     "ARGON2_MAX_PARALLELISM",
@@ -30,6 +31,7 @@ from crypto_toolkit.core.constants import (
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
+    PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
 
@@ -53,28 +55,53 @@ _PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
 
 PBKDF2_SUPPORTED_HASHES: frozenset[str] = frozenset(_PBKDF2_HASH_FACTORIES)
 
-# OWASP 2023 minimum iteration counts, keyed by hash name.
-_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
-    "sha256":   600_000,  # OWASP 2023 recommendation for PBKDF2-HMAC-SHA256
-    "sha512":   210_000,  # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
-    "sha3_256": 200_000,  # SHA3-256 is ~3× slower than SHA-256 per iteration
-    "sha3_512": 100_000,  # SHA3-512 is ~2× slower than SHA-512 per iteration
-}
-
 # ── Return type ───────────────────────────────────────────────────────────────
 
 class DerivedKey(NamedTuple):
     """Container for a derived key and the metadata needed to reproduce it."""
 
-    key: bytes
+    key: bytearray
     salt: bytes
     pbkdf2_hash: str | None = None         # None for Argon2-derived keys
     pbkdf2_iterations: int | None = None   # None for Argon2-derived keys
 
-# ── Memory erasure ────────────────────────────────────────────────────────────
+# ── Secure key erasure ────────────────────────────────────────────────────────
+
+def zero_key(key: bytearray) -> None:
+    """Zero a :class:`bytearray` key buffer in-place."""
+
+    if not isinstance(key, bytearray):
+        raise TypeError(
+            f"zero_key expects a bytearray; got {type(key).__name__!r}. "
+            "For bytes objects use zero_bytes (CPython only, best-effort)."
+        )
+    if len(key) == 0:
+        return
+    ctypes.memset((ctypes.c_char * len(key)).from_buffer(key), 0, len(key))
+
+
+def _find_bytes_data_offset() -> int:
+    """Probe the CPython bytes object layout to locate the raw character buffer."""
+    sentinel = b"\xAA"
+    base = id(sentinel)
+    for off in range(16, 72):
+        try:
+            if ctypes.string_at(base + off, 1) == b"\xAA":
+                return off
+        except Exception:
+            continue
+    raise RuntimeError(
+        "zero_bytes: cannot locate CPython bytes data buffer at any offset 16–71. "
+        "The CPython layout may have changed in this build."
+    )
+
+# Module-level cache: None = not yet probed, int = confirmed offset.
+_BYTES_DATA_OFFSET: int | None = None
 
 def zero_bytes(data: bytes) -> None:
     """Best-effort in-place zeroing of a ``bytes`` object (CPython only)."""
+    global _BYTES_DATA_OFFSET
+
     if platform.python_implementation() != "CPython":
         warnings.warn(
             "zero_bytes: memory wiping is a no-op on non-CPython runtimes "
@@ -86,19 +113,31 @@ def zero_bytes(data: bytes) -> None:
         )
         return
 
+    # Probe the buffer offset on first use; cache it for subsequent calls.
+    if _BYTES_DATA_OFFSET is None:
+        try:
+            _BYTES_DATA_OFFSET = _find_bytes_data_offset()
+        except RuntimeError as exc:
+            warnings.warn(
+                f"zero_bytes: {exc}. Key material will not be wiped for this process.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
     try:
-        # CPython lays out bytes objects so that the raw character buffer
-        # starts at `id(obj) + bytes.__basicsize__ - 1` on 64-bit builds.
-        buf_offset = bytes.__basicsize__ - 1  # 33 on CPython 3.10-3.12 / 64-bit
-        ctypes.memset(id(data) + buf_offset, 0, len(data))
-        assert data == b"\x00" * len(data), (
-            "zero_bytes: post-wipe verification failed "
-            "buf_offset calculation may be wrong for this Python build."
-        )
+        ctypes.memset(id(data) + _BYTES_DATA_OFFSET, 0, len(data))
     except Exception:
-        # Layout mismatch or unexpected CPython internal change — accept the
-        # limitation silently. The caller still proceeds; this is best-effort.
-        pass
+        return
+    wiped = ctypes.string_at(id(data) + _BYTES_DATA_OFFSET, len(data))
+    if any(b != 0 for b in wiped):
+        warnings.warn(
+            "zero_bytes: post-wipe verification failed; "
+            "key material may remain on the heap. "
+            "The computed buffer offset may be wrong for this Python build.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 # ── Parameter validators ──────────────────────────────────────────────────────
 
@@ -151,7 +190,6 @@ def _validate_pbkdf2_params(
             f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
             f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
-    # Min-iterations lookup is safe here because hash_algorithm is confirmed valid above.
     min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
     if iterations < min_iters:
         raise InputValidationError(
@@ -185,8 +223,6 @@ def derive_key_argon2(
     _validate_argon2_params(time_cost, memory_cost, parallelism, hash_len, salt)
 
     try:
-        # Import is deferred so the toolkit degrades gracefully when argon2-cffi
-        # is not installed instead of failing at module import time.
         from argon2.low_level import Type as Argon2Type, hash_secret_raw  # type: ignore[import-untyped]
     except ImportError as exc:
         raise KeyDerivationError(
@@ -199,7 +235,7 @@ def derive_key_argon2(
 
     try:
         password_bytes = password.encode() if isinstance(password, str) else password
-        key = hash_secret_raw(
+        raw_key: bytes = hash_secret_raw(
             secret=password_bytes,
             salt=salt,
             time_cost=time_cost,
@@ -208,7 +244,9 @@ def derive_key_argon2(
             hash_len=hash_len,
             type=Argon2Type.ID,
         )
-        return DerivedKey(key=key, salt=salt)
+        key_buf = bytearray(raw_key)
+        zero_bytes(raw_key)
+        return DerivedKey(key=key_buf, salt=salt)
     except (InputValidationError, KeyDerivationError):
         raise
     except Exception as exc:
@@ -242,9 +280,12 @@ def derive_key_pbkdf2(
             salt=salt,
             iterations=iterations,
         )
-        key = kdf_obj.derive(password_bytes)
+        raw_key: bytes = kdf_obj.derive(password_bytes)
+        # F-02: same bytearray wrapping as in derive_key_argon2.
+        key_buf = bytearray(raw_key)
+        zero_bytes(raw_key)
         return DerivedKey(
-            key=key,
+            key=key_buf,
             salt=salt,
             pbkdf2_hash=hash_algorithm,
             pbkdf2_iterations=iterations,
