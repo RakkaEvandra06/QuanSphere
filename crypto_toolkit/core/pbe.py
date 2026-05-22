@@ -22,6 +22,8 @@ from crypto_toolkit.core.constants import (
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
     PBKDF2_SALT_LEN,
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
+    PBKDF2_MAX_ITERATIONS as _PBKDF2_MAX_ITERATIONS,
+    PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.exceptions import (
     CryptoToolkitError,
@@ -35,29 +37,20 @@ from crypto_toolkit.core.kdf import (
     ARGON2_MAX_TIME_COST as _ARGON2_MAX_TIME_COST,
     derive_key_argon2,
     derive_key_pbkdf2,
-    zero_bytes,
+    zero_key,     
+    zero_bytes,   # kept for zero_bytes(derived.key) call sites that deal with bytes
 )
 
 _KDF_ARGON2: bytes = b"\x01"
 _KDF_PBKDF2: bytes = b"\x02"
+_DECRYPT_MAX_TIME_COST: int = 30
+_DECRYPT_MAX_MEMORY_COST: int = 524_288   # 512 MiB in KiB
+_DECRYPT_MAX_PARALLELISM: int = 32
 
-# Decryption-side caps guard against hostile envelopes causing DoS.
-_DECRYPT_MAX_TIME_COST: int = _ARGON2_MAX_TIME_COST
-_DECRYPT_MAX_MEMORY_COST: int = _ARGON2_MAX_MEMORY_COST
-_DECRYPT_MAX_PARALLELISM: int = _ARGON2_MAX_PARALLELISM
-
-_PBKDF2_MAX_ITERATIONS: dict[str, int] = {
-    "sha256":   10_000_000,
-    "sha512":    3_500_000,
-    "sha3_256":  3_000_000,
-    "sha3_512":  1_500_000,
-}
-_PBKDF2_MIN_ITERATIONS: dict[str, int] = {
-    "sha256":   600_000,
-    "sha512":   210_000,
-    "sha3_256": 200_000,
-    "sha3_512": 100_000,
-}
+# Lower-bound sanity checks (unchanged from original).
+_DECRYPT_MIN_TIME_COST: int = 1
+_DECRYPT_MIN_MEMORY_COST: int = 8_192    # 8 MiB in KiB
+_DECRYPT_MIN_PARALLELISM: int = 1
 
 # Both salts must be the same length so the PBE parser can use a single offset.
 if ARGON2_SALT_LEN != PBKDF2_SALT_LEN:
@@ -76,7 +69,7 @@ _SALT_LEN: int = ARGON2_SALT_LEN
 # magic (7) + version (1) + kdf_tag (1) = 9 bytes
 _HEADER_PREFIX_LEN: int = len(_PBE_MAGIC) + 1 + 1
 
-# Argon2 envelope:  magic + version + kdf_tag + salt + argon2_params + nonce + ciphertext
+# Argon2 envelope: magic + version + kdf_tag + salt + argon2_params + nonce + ciphertext
 _ARGON2_MIN_ENVELOPE: int = (
     len(_PBE_MAGIC) + 1 + 1 + _SALT_LEN + ARGON2_PARAMS_LEN + AES_NONCE_SIZE
     + AEAD_MIN_CIPHERTEXT
@@ -127,8 +120,10 @@ def _encrypt_argon2(
         parallelism=argon2_parallelism,
     )
     aad = _build_aad_argon2(derived.salt, argon2_params)
-    ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
-    zero_bytes(derived.key)
+    try:
+        ciphertext = AESGCM(bytes(derived.key)).encrypt(nonce, plaintext, aad)
+    finally:
+        zero_key(derived.key)
 
     return (
         _PBE_MAGIC
@@ -159,8 +154,10 @@ def _encrypt_pbkdf2(plaintext: bytes, password: str, nonce: bytes) -> bytes:
 
     iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations)
     aad = _build_aad_pbkdf2(derived.salt, hash_tag, derived.pbkdf2_iterations)
-    ciphertext = AESGCM(derived.key).encrypt(nonce, plaintext, aad)
-    zero_bytes(derived.key)
+    try:
+        ciphertext = AESGCM(bytes(derived.key)).encrypt(nonce, plaintext, aad)
+    finally:
+        zero_key(derived.key)
 
     return (
         _PBE_MAGIC
@@ -238,7 +235,7 @@ def password_decrypt(token: str, password: str) -> bytes:
         kdf_name = "Argon2" if kdf_tag == _KDF_ARGON2 else "PBKDF2"
         if len(raw) < min_len:
             raise DecryptionError(
-                f"{kdf_name} envelope is too short ({len(raw)} bytes "
+                f"{kdf_name} envelope is too short ({len(raw)} bytes; "
                 f"minimum expected is {min_len}). "
                 "The token is likely truncated or corrupted."
             )
@@ -255,7 +252,6 @@ def password_decrypt(token: str, password: str) -> bytes:
                 ARGON2_PARAMS_STRUCT, argon2_params_raw
             )
 
-            # Upper-bound DoS cap (pre-existing).
             if (
                 time_cost > _DECRYPT_MAX_TIME_COST
                 or memory_cost > _DECRYPT_MAX_MEMORY_COST
@@ -271,10 +267,16 @@ def password_decrypt(token: str, password: str) -> bytes:
                     "The token may originate from an untrusted or malicious source."
                 )
 
-            if time_cost < 1 or memory_cost < 8192 or parallelism < 1:
+            if (
+                time_cost < _DECRYPT_MIN_TIME_COST
+                or memory_cost < _DECRYPT_MIN_MEMORY_COST
+                or parallelism < _DECRYPT_MIN_PARALLELISM
+            ):
                 raise DecryptionError(
                     f"Envelope Argon2 parameters are below the minimum allowed "
-                    f"(time_cost≥1, memory_cost≥8192 KiB, parallelism≥1); "
+                    f"(time_cost≥{_DECRYPT_MIN_TIME_COST}, "
+                    f"memory_cost≥{_DECRYPT_MIN_MEMORY_COST} KiB, "
+                    f"parallelism≥{_DECRYPT_MIN_PARALLELISM}); "
                     f"received time_cost={time_cost}, memory_cost={memory_cost}, "
                     f"parallelism={parallelism}. "
                     "The token is corrupt or originates from a malicious source."
@@ -303,7 +305,6 @@ def password_decrypt(token: str, password: str) -> bytes:
             (pbkdf2_iterations,) = struct.unpack(">I", raw[offset : offset + 4])
             offset += 4  # consume 4-byte iterations field
 
-            # Upper-bound DoS cap (pre-existing).
             pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
             if pbkdf2_iterations > pbkdf2_max:
                 raise DecryptionError(
@@ -330,9 +331,11 @@ def password_decrypt(token: str, password: str) -> bytes:
                 hash_algorithm=pbkdf2_hash,
             )
             aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
+        try:
+            plaintext = AESGCM(bytes(derived.key)).decrypt(nonce, ciphertext, aad)
+        finally:
+            zero_key(derived.key)
 
-        plaintext = AESGCM(derived.key).decrypt(nonce, ciphertext, aad)
-        zero_bytes(derived.key)
         return plaintext
 
     except CryptoToolkitError:
