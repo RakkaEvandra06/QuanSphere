@@ -17,8 +17,8 @@ except AttributeError:                # pragma: no cover
     from typing import Any
     _HashType = Any                   # type: ignore[assignment,misc]
 
-_BLAKE2B_DEFAULT_DIGEST_SIZE: int = 64   # 512-bit output — native maximum
-_BLAKE2S_DEFAULT_DIGEST_SIZE: int = 32   # 256-bit output — native maximum
+_BLAKE2B_DEFAULT_DIGEST_SIZE: int = 64   # 512-bit — BLAKE2b native maximum.
+_BLAKE2S_DEFAULT_DIGEST_SIZE: int = 32   # 256-bit — BLAKE2s native maximum.
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -148,7 +148,7 @@ def hash_file(
             return _hash_stream_impl(
                 fh, algorithm, FILE_CHUNK_SIZE, digest_size,
                 seek_to_start=False,
-                warn_on_nonzero_pos=True,
+                warn_on_nonzero_pos=False,
                 _stacklevel=4,
             )
     except (InputValidationError, HashingError):
