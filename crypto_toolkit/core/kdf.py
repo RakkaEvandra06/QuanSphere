@@ -15,10 +15,14 @@ __all__ = [
 import ctypes
 import platform
 import secrets
+import threading
 import warnings
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import NamedTuple
 
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # needed by _aesgcm_from_key
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from crypto_toolkit.core.constants import (
@@ -95,12 +99,21 @@ def _find_bytes_data_offset() -> int:
         "The CPython layout may have changed in this build."
     )
 
+_BYTES_DATA_LOCK: threading.Lock = threading.Lock()
+
 # Module-level cache: None = not yet probed, int = confirmed offset.
 _BYTES_DATA_OFFSET: int | None = None
 
 def zero_bytes(data: bytes) -> None:
-    """Best-effort in-place zeroing of a ``bytes`` object (CPython only)."""
+    """Best-effort in-place zeroing of an **immutable** ``bytes`` object (CPython only)."""
     global _BYTES_DATA_OFFSET
+
+    if not isinstance(data, bytes):
+        raise TypeError(
+            f"zero_bytes() expects an immutable bytes object; got {type(data).__name__!r}. "
+            "Use zero_key() for bytearray buffers, it is reliable across all CPython "
+            "builds and correctly uses the C-buffer protocol via ctypes.memset."
+        )
 
     if platform.python_implementation() != "CPython":
         warnings.warn(
@@ -113,17 +126,18 @@ def zero_bytes(data: bytes) -> None:
         )
         return
 
-    # Probe the buffer offset on first use; cache it for subsequent calls.
     if _BYTES_DATA_OFFSET is None:
-        try:
-            _BYTES_DATA_OFFSET = _find_bytes_data_offset()
-        except RuntimeError as exc:
-            warnings.warn(
-                f"zero_bytes: {exc}. Key material will not be wiped for this process.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return
+        with _BYTES_DATA_LOCK:
+            if _BYTES_DATA_OFFSET is None:
+                try:
+                    _BYTES_DATA_OFFSET = _find_bytes_data_offset()
+                except RuntimeError as exc:
+                    warnings.warn(
+                        f"zero_bytes: {exc}. Key material will not be wiped for this process.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    return
 
     try:
         ctypes.memset(id(data) + _BYTES_DATA_OFFSET, 0, len(data))
@@ -138,6 +152,17 @@ def zero_bytes(data: bytes) -> None:
             RuntimeWarning,
             stacklevel=2,
         )
+
+# ── AEAD cipher context manager ─────────────────────────────────
+
+@contextmanager
+def _aesgcm_from_key(key: bytearray) -> Generator[AESGCM, None, None]:
+    """Context manager that constructs an :class:`AESGCM` from a bytearray key."""
+    cipher = AESGCM(bytes(key))
+    try:
+        yield cipher
+    finally:
+        del cipher  # drop reference so CPython GC can collect promptly
 
 # ── Parameter validators ──────────────────────────────────────────────────────
 
@@ -281,7 +306,6 @@ def derive_key_pbkdf2(
             iterations=iterations,
         )
         raw_key: bytes = kdf_obj.derive(password_bytes)
-        # F-02: same bytearray wrapping as in derive_key_argon2.
         key_buf = bytearray(raw_key)
         zero_bytes(raw_key)
         return DerivedKey(
