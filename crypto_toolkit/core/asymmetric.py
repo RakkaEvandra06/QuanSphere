@@ -52,7 +52,10 @@ from crypto_toolkit.core.exceptions import (
     InputValidationError,
     KeyGenerationError,
 )
-from crypto_toolkit.core.kdf import zero_bytes
+from crypto_toolkit.core.kdf import (
+    _aesgcm_from_key,   # FIX BUG-03: context manager minimises Python-heap key residue
+    zero_bytes,
+)
 
 # Expected first byte for an uncompressed SEC1 elliptic-curve point (X9.62 §4.3.6).
 _UNCOMPRESSED_POINT_PREFIX = 0x04
@@ -81,6 +84,7 @@ _X25519_HKDF_INFO: bytes = b"crypto-toolkit-x25519-hybrid"
 
 # A low-order X25519 point produces an all-zero shared secret — reject it.
 _X25519_ZERO_SECRET: bytes = b"\x00" * 32
+_ECC_ZERO_SECRET: bytes = b"\x00" * 32
 
 # Supported key types accepted by the load_* helpers.
 _SUPPORTED_PRIVATE_KEY_TYPES: tuple[type, ...] = (
@@ -326,6 +330,13 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
         ephemeral_pub = ephemeral_priv.public_key()
         shared_secret = ephemeral_priv.exchange(ECDH(), recipient_pub)
 
+        if hmac.compare_digest(shared_secret, _ECC_ZERO_SECRET):
+            raise EncryptionError(
+                "ECDH key exchange produced a zero shared secret — "
+                "the recipient public key may be degenerate. "
+                "Verify that the key is a valid SECP256R1 point."
+            )
+
         ephemeral_pub_bytes = ephemeral_pub.public_bytes(
             serialization.Encoding.X962,
             serialization.PublicFormat.UncompressedPoint,
@@ -342,7 +353,10 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
         )
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
+        _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
+        aes_key_buf = bytearray(aes_key)
+        with _aesgcm_from_key(aes_key_buf) as cipher:
+            ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
         return _ASYM_ECC_HEADER + ephemeral_pub_bytes + nonce + ciphertext
     except InputValidationError:
@@ -359,7 +373,6 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
     """Decrypt an envelope produced by :func:`ecc_hybrid_encrypt`."""
     _assert_secp256r1(private_key, "hybrid decryption")
 
-    # FIX F-03: length check now accounts for the 10-byte header.
     if len(envelope) < _ECC_MIN_ENVELOPE:
         raise DecryptionError(
             f"ECC envelope is too short ({len(envelope)} bytes); "
@@ -400,6 +413,13 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         )
         shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
+        if hmac.compare_digest(shared_secret, _ECC_ZERO_SECRET):
+            raise DecryptionError(
+                "ECDH key exchange produced a zero shared secret, "
+                "the ephemeral public key in the envelope is degenerate. "
+                "The envelope must be rejected."
+            )
+
         recipient_pub_bytes = private_key.public_key().public_bytes(
             serialization.Encoding.X962,
             serialization.PublicFormat.UncompressedPoint,
@@ -410,8 +430,12 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             info=_ECC_HKDF_INFO + recipient_pub_bytes,
         )
 
-        # AAD must match what ecc_hybrid_encrypt used — ephemeral_pub_bytes.
-        return AESGCM(aes_key).decrypt(nonce, ciphertext, ephemeral_pub_bytes)
+        # AAD must exactly match what ecc_hybrid_encrypt used:
+        # full envelope header + ephemeral public key bytes.
+        _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
+        aes_key_buf = bytearray(aes_key)
+        with _aesgcm_from_key(aes_key_buf) as cipher:
+            return cipher.decrypt(nonce, ciphertext, _aad)
     except (InputValidationError, DecryptionError):
         raise
     except Exception as exc:
@@ -467,9 +491,10 @@ def x25519_hybrid_encrypt(
         )
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        # Bind the ciphertext to this envelope by passing the ephemeral public
-        # key as AEAD AAD, mirroring the ECC hybrid pattern.
-        ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext, ephemeral_pub_bytes)
+        _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
+        aes_key_buf = bytearray(aes_key)
+        with _aesgcm_from_key(aes_key_buf) as cipher:
+            ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
         return _ASYM_X25519_HEADER + ephemeral_pub_bytes + nonce + ciphertext
     except (EncryptionError, InputValidationError):
@@ -534,8 +559,12 @@ def x25519_hybrid_decrypt(
             info=_X25519_HKDF_INFO + recipient_pub_raw,
         )
 
-        # AAD must match what x25519_hybrid_encrypt used — ephemeral_pub_bytes.
-        return AESGCM(aes_key).decrypt(nonce, ciphertext, ephemeral_pub_bytes)
+        # AAD must exactly match what x25519_hybrid_encrypt used:
+        # full envelope header + ephemeral public key bytes.
+        _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
+        aes_key_buf = bytearray(aes_key)
+        with _aesgcm_from_key(aes_key_buf) as cipher:
+            return cipher.decrypt(nonce, ciphertext, _aad)
 
     except (InputValidationError, DecryptionError):
         raise
