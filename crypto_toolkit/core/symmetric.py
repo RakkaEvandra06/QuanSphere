@@ -51,9 +51,12 @@ def _build_aad(header: bytes, associated_data: bytes | None) -> bytes:
     """Construct the internal AAD from the envelope header and caller-supplied data."""
     if associated_data is not None and len(associated_data) == 0:
         warnings.warn(
-            "associated_data=b'' is equivalent to None (no AAD is applied). "
-            "Pass None explicitly to suppress this warning, or supply a "
-            "non-empty binding context (e.g. b'user:alice').",
+            "associated_data=b'' contributes no additional binding context beyond "
+            "the envelope header (magic + version + algorithm tag) that is always "
+            "authenticated.  Pass associated_data=None to suppress this warning, "
+            "or supply a non-empty context (e.g. b'user:alice', a session ID, or "
+            "a resource identifier) to cryptographically bind the ciphertext to a "
+            "specific principal or scope.",
             UserWarning,
             stacklevel=3,
         )
