@@ -35,10 +35,10 @@ from crypto_toolkit.core.kdf import (
     ARGON2_MAX_MEMORY_COST as _ARGON2_MAX_MEMORY_COST,
     ARGON2_MAX_PARALLELISM as _ARGON2_MAX_PARALLELISM,
     ARGON2_MAX_TIME_COST as _ARGON2_MAX_TIME_COST,
+    _aesgcm_from_key,
     derive_key_argon2,
     derive_key_pbkdf2,
-    zero_key,     
-    zero_bytes,   # kept for zero_bytes(derived.key) call sites that deal with bytes
+    zero_key,
 )
 
 _KDF_ARGON2: bytes = b"\x01"
@@ -121,7 +121,8 @@ def _encrypt_argon2(
     )
     aad = _build_aad_argon2(derived.salt, argon2_params)
     try:
-        ciphertext = AESGCM(bytes(derived.key)).encrypt(nonce, plaintext, aad)
+        with _aesgcm_from_key(derived.key) as cipher:
+            ciphertext = cipher.encrypt(nonce, plaintext, aad)
     finally:
         zero_key(derived.key)
 
@@ -138,37 +139,38 @@ def _encrypt_argon2(
 def _encrypt_pbkdf2(plaintext: bytes, password: str, nonce: bytes) -> bytes:
     """Return the raw PBKDF2 PBE envelope (not yet base64-encoded)."""
     derived = derive_key_pbkdf2(password)
-
-    if derived.pbkdf2_iterations is None or derived.pbkdf2_hash is None:
-        raise EncryptionError(
-            "derive_key_pbkdf2 returned incomplete metadata "
-            "(pbkdf2_iterations or pbkdf2_hash is None) "
-            "cannot construct a valid PBKDF2 envelope."
-        )
-
-    hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash)
-    if hash_tag is None:
-        raise EncryptionError(
-            f"Cannot encode PBKDF2 hash {derived.pbkdf2_hash!r} into envelope."
-        )
-
-    iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations)
-    aad = _build_aad_pbkdf2(derived.salt, hash_tag, derived.pbkdf2_iterations)
     try:
-        ciphertext = AESGCM(bytes(derived.key)).encrypt(nonce, plaintext, aad)
+        if derived.pbkdf2_iterations is None or derived.pbkdf2_hash is None:
+            raise EncryptionError(
+                "derive_key_pbkdf2 returned incomplete metadata "
+                "(pbkdf2_iterations or pbkdf2_hash is None) "
+                "cannot construct a valid PBKDF2 envelope."
+            )
+
+        hash_tag = _PBKDF2_HASH_TO_TAG.get(derived.pbkdf2_hash)
+        if hash_tag is None:
+            raise EncryptionError(
+                f"Cannot encode PBKDF2 hash {derived.pbkdf2_hash!r} into envelope."
+            )
+
+        iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations)
+        aad = _build_aad_pbkdf2(derived.salt, hash_tag, derived.pbkdf2_iterations)
+        with _aesgcm_from_key(derived.key) as cipher:
+            ciphertext = cipher.encrypt(nonce, plaintext, aad)
+        # Return inside the try block so the finally still executes before
+        # the value is handed back to the caller.
+        return (
+            _PBE_MAGIC
+            + ENVELOPE_VERSION
+            + _KDF_PBKDF2
+            + derived.salt
+            + hash_tag
+            + iterations_bytes
+            + nonce
+            + ciphertext
+        )
     finally:
         zero_key(derived.key)
-
-    return (
-        _PBE_MAGIC
-        + ENVELOPE_VERSION
-        + _KDF_PBKDF2
-        + derived.salt
-        + hash_tag
-        + iterations_bytes
-        + nonce
-        + ciphertext
-    )
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -213,7 +215,8 @@ def password_decrypt(token: str, password: str) -> bytes:
         raise InputValidationError("Password must not be empty.")
 
     try:
-        raw = base64.urlsafe_b64decode(token.encode())
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode())
         magic_len = len(_PBE_MAGIC)
 
         if len(raw) < _HEADER_PREFIX_LEN:
@@ -331,8 +334,10 @@ def password_decrypt(token: str, password: str) -> bytes:
                 hash_algorithm=pbkdf2_hash,
             )
             aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
+
         try:
-            plaintext = AESGCM(bytes(derived.key)).decrypt(nonce, ciphertext, aad)
+            with _aesgcm_from_key(derived.key) as cipher:
+                plaintext = cipher.decrypt(nonce, ciphertext, aad)
         finally:
             zero_key(derived.key)
 
