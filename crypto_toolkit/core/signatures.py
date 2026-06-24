@@ -5,6 +5,7 @@ __all__ = [
     "generate_ed25519_keypair",
     "sign_ed25519",
     "verify_ed25519",
+    "verify_ed25519_or_raise",
     "ed25519_private_key_to_pem",
     "ed25519_public_key_to_pem",
     "load_ed25519_private_key",
@@ -12,14 +13,20 @@ __all__ = [
     # RSA-PSS
     "sign_rsa_pss",
     "verify_rsa_pss",
+    "verify_rsa_pss_or_raise",
 ]
+
+import warnings
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 
+from crypto_toolkit.core.constants import RSA_MIN_KEY_SIZE
 from crypto_toolkit.core.exceptions import InputValidationError, KeyGenerationError, SignatureError
+
+_RSA_LEGACY_THRESHOLD: int = 2048
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -54,7 +61,6 @@ def verify_ed25519(
     signature: bytes,
     public_key: ed25519.Ed25519PublicKey,
 ) -> bool:
-    """Verify an Ed25519 *signature* over *data* with *public_key*."""
     try:
         public_key.verify(signature, data)
         return True
@@ -62,13 +68,24 @@ def verify_ed25519(
         return False
     except (ValueError, TypeError) as exc:
         raise SignatureError(
-            "Ed25519 verification received malformed input "
+            "Ed25519 verification received malformed input, "
             "the signature bytes or key may be corrupt."
         ) from exc
     except Exception as exc:
         raise SignatureError(
             "Ed25519 verification encountered an unexpected error."
         ) from exc
+
+def verify_ed25519_or_raise(
+    data: bytes,
+    signature: bytes,
+    public_key: ed25519.Ed25519PublicKey,
+) -> None:
+    if not verify_ed25519(data, signature, public_key):
+        raise SignatureError(
+            "Ed25519 signature verification failed: the signature is not valid "
+            "for the given data and public key."
+        )
 
 # ── Ed25519 serialisation ─────────────────────────────────────────────────────
 
@@ -137,13 +154,42 @@ def load_ed25519_public_key(pem: bytes) -> ed25519.Ed25519PublicKey:
 
 def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
     """Sign *data* with *private_key* using RSA-PSS / SHA-256."""
+    if private_key.key_size < RSA_MIN_KEY_SIZE:
+        raise InputValidationError(
+            f"RSA signing key is {private_key.key_size} bits; "
+            f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
+        )
+    if private_key.key_size <= _RSA_LEGACY_THRESHOLD:
+        warnings.warn(
+            f"RSA signing key is {private_key.key_size} bits. "
+            "NIST SP 800-131A Rev. 2 recommends ≥3072 bits for keys expected "
+            "to remain secure beyond 2030. Consider re-generating with a "
+            "3072- or 4096-bit key.",
+            UserWarning,
+            stacklevel=2,
+        )
     try:
         return private_key.sign(data, _pss_padding(), hashes.SHA256())
     except Exception as exc:
         raise SignatureError("RSA-PSS signing failed.") from exc
 
 def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> bool:
-    """Verify an RSA-PSS *signature* over *data* with *public_key*."""
+    if public_key.key_size < RSA_MIN_KEY_SIZE:
+        raise InputValidationError(
+            f"RSA verification key is {public_key.key_size} bits; "
+            f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
+        )
+    if public_key.key_size <= _RSA_LEGACY_THRESHOLD:
+        warnings.warn(
+            f"RSA verification key is {public_key.key_size} bits. "
+            "NIST SP 800-131A Rev. 2 recommends ≥3072 bits for keys expected "
+            "to remain secure beyond 2030. Consider re-generating with a "
+            "3072- or 4096-bit key.",
+            UserWarning,
+            stacklevel=2,
+        )
     try:
         public_key.verify(signature, data, _pss_padding(), hashes.SHA256())
         return True
@@ -158,3 +204,14 @@ def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> b
         raise SignatureError(
             "RSA-PSS verification encountered an unexpected error."
         ) from exc
+
+def verify_rsa_pss_or_raise(
+    data: bytes,
+    signature: bytes,
+    public_key: RSAPublicKey,
+) -> None:
+    if not verify_rsa_pss(data, signature, public_key):
+        raise SignatureError(
+            "RSA-PSS signature verification failed: the signature is not valid "
+            "for the given data and public key."
+        )
