@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-__all__ = ["hash_data", "hash_stream", "hash_file"]
+__all__ = ["hash_data", "hash_stream", "hash_file", "mac_data", "hmac_data"]
 
 import hashlib
+import hmac as _hmac
 import warnings
 from pathlib import Path
 from typing import BinaryIO
@@ -19,6 +20,16 @@ except AttributeError:                # pragma: no cover
 
 _BLAKE2B_DEFAULT_DIGEST_SIZE: int = 64   # 512-bit — BLAKE2b native maximum.
 _BLAKE2S_DEFAULT_DIGEST_SIZE: int = 32   # 256-bit — BLAKE2s native maximum.
+
+_HMAC_SUPPORTED: frozenset[str] = frozenset({
+    "sha256", "sha512", "sha3_256", "sha3_512",
+})
+
+# BLAKE2 variants are routed to their native keyed mode inside hmac_data.
+_BLAKE2_KEYED: frozenset[str] = frozenset({"blake2b", "blake2s"})
+_BLAKE2B_MAX_KEY: int = 64   # bytes BLAKE2b native key length maximum
+_BLAKE2S_MAX_KEY: int = 32   # bytes BLAKE2s native key length maximum
+_HASH_MAX_CHUNK_SIZE: int = 256 * 1024 * 1024   # 256 MiB
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -44,6 +55,12 @@ def _get_hash_obj(algorithm: str, digest_size: int | None = None) -> _HashType:
                 f"BLAKE2s digest_size must be between 1 and 32 bytes; got {size}."
             )
         return hashlib.blake2s(digest_size=size)
+    if digest_size is not None:
+        raise InputValidationError(
+            f"digest_size is only configurable for 'blake2b'/'blake2s'; "
+            f"{algo!r} always produces a fixed-length digest and does not "
+            "support truncation. Omit digest_size for this algorithm."
+        )
     return hashlib.new(algo)
 
 def _warn_nonzero_stream_position(stream: BinaryIO, *, stacklevel: int) -> None:
@@ -108,7 +125,6 @@ def hash_data(
     *,
     digest_size: int | None = None,
 ) -> str:
-    """Hash *data* and return the hex digest."""
     try:
         h = _get_hash_obj(algorithm, digest_size)
         h.update(data)
@@ -127,11 +143,19 @@ def hash_stream(
     seek_to_start: bool = False,
     warn_on_nonzero_pos: bool = True,
 ) -> str:
+    """Hash *stream* in chunks and return the hex digest."""
+    if not (1 <= chunk_size <= _HASH_MAX_CHUNK_SIZE):
+        raise InputValidationError(
+            f"chunk_size must be between 1 and {_HASH_MAX_CHUNK_SIZE:,} bytes "
+            f"({_HASH_MAX_CHUNK_SIZE // (1024 * 1024)} MiB); "
+            f"received {chunk_size}. "
+            "Omit the argument to use the default (65 536 bytes)."
+        )
     return _hash_stream_impl(
         stream, algorithm, chunk_size, digest_size,
         seek_to_start=seek_to_start,
         warn_on_nonzero_pos=warn_on_nonzero_pos,
-        _stacklevel=3,
+        _stacklevel=4,
     )
 
 def hash_file(
@@ -155,3 +179,74 @@ def hash_file(
         raise
     except Exception as exc:
         raise HashingError(f"Failed to hash file {path}: {exc}") from exc
+
+def mac_data(
+    key: bytes,
+    data: bytes,
+    algorithm: str = DEFAULT_HASH,
+) -> str:
+    """Return a hex-encoded MAC for *data* under *key*."""
+    if not key:
+        raise InputValidationError(
+            "MAC key must not be empty. "
+            "Provide a non-empty secret key for authenticated hashing."
+        )
+    algo = algorithm.lower()
+
+    # ── BLAKE2: native keyed-hash mode ───────────────────────────────────────
+    if algo in _BLAKE2_KEYED:
+        max_key_len = _BLAKE2B_MAX_KEY if algo == "blake2b" else _BLAKE2S_MAX_KEY
+        if len(key) > max_key_len:
+            raise InputValidationError(
+                f"BLAKE2 keyed-hash key must be at most {max_key_len} bytes "
+                f"for {algo!r}; received {len(key)} byte(s). "
+                "Shorten the key or switch to a SHA-2/SHA-3 algorithm if a "
+                "longer key is required."
+            )
+        if len(key) < 16:
+            import warnings as _w
+            _w.warn(
+                f"BLAKE2 keyed-hash key is only {len(key)} byte(s); "
+                "for full MAC security the key should be at least 16 bytes "
+                f"(ideally {max_key_len} bytes for {algo!r}).",
+                UserWarning,
+                stacklevel=2,
+            )
+        try:
+            # hashlib.blake2b/s(data, key=key) is the canonical keyed MAC for BLAKE2.
+            # This is NOT the same as HMAC(BLAKE2) — it uses BLAKE2's built-in keying.
+            h = hashlib.new(algo, data, key=key)
+            return h.hexdigest()
+        except Exception as exc:
+            raise HashingError("BLAKE2 keyed-hash computation failed.") from exc
+
+    # ── SHA-2 / SHA-3: standard RFC 2104 HMAC ────────────────────────────────
+    if algo not in _HMAC_SUPPORTED:
+        raise InputValidationError(
+            f"Algorithm {algorithm!r} is not supported. "
+            f"Choose from: {sorted(_HMAC_SUPPORTED | _BLAKE2_KEYED)}."
+        )
+    try:
+        mac = _hmac.new(key, data, algo)
+        return mac.hexdigest()
+    except InputValidationError:
+        raise
+    except Exception as exc:
+        raise HashingError("HMAC computation failed.") from exc
+
+def hmac_data(
+    key: bytes,
+    data: bytes,
+    algorithm: str = DEFAULT_HASH,
+) -> str:
+    """Deprecated alias for :func:`mac_data`."""
+    import warnings as _w
+    _w.warn(
+        "hmac_data() is deprecated; use mac_data() instead. "
+        "The new name clarifies that BLAKE2 algorithms use native keyed-hash "
+        "mode (not HMAC-BLAKE2), which is not interoperable with HMAC(BLAKE2) "
+        "implementations in other languages.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return mac_data(key, data, algorithm)
