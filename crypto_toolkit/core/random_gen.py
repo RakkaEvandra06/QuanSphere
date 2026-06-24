@@ -18,8 +18,9 @@ from crypto_toolkit.core.exceptions import InputValidationError
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_MIN_PASSWORD_ENTROPY_BITS: int = 60
+_MIN_PASSWORD_ENTROPY_BITS: int = 72
 _SYMBOL_CHARS: str = "!@#$%^&*()-_=+"
+_MAX_RANDOM_BYTES: int = 64 * 1024 * 1024  # 64 MiB
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -88,18 +89,34 @@ def generate_key(size: int = AES_KEY_SIZE) -> bytes:
     """Return *size* cryptographically secure random bytes."""
     if size <= 0:
         raise InputValidationError("Key size must be a positive integer.")
+    if size > _MAX_RANDOM_BYTES:
+        raise InputValidationError(
+            f"Key size must be at most {_MAX_RANDOM_BYTES:,} bytes "
+            f"({_MAX_RANDOM_BYTES // (1024 * 1024)} MiB); received {size:,}. "
+            "No legitimate cryptographic key requires this much random material."
+        )
     return secrets.token_bytes(size)
 
 def generate_token(nbytes: int = 32) -> str:
     """Return a URL-safe base64 token backed by *nbytes* random bytes."""
     if nbytes <= 0:
         raise InputValidationError("Token byte count must be positive.")
+    if nbytes > _MAX_RANDOM_BYTES:
+        raise InputValidationError(
+            f"Token byte count must be at most {_MAX_RANDOM_BYTES:,} bytes "
+            f"({_MAX_RANDOM_BYTES // (1024 * 1024)} MiB); received {nbytes:,}."
+        )
     return secrets.token_urlsafe(nbytes)
 
 def generate_hex(nbytes: int = 32) -> str:
     """Return a hex string backed by *nbytes* random bytes."""
     if nbytes <= 0:
         raise InputValidationError("Byte count must be positive.")
+    if nbytes > _MAX_RANDOM_BYTES:
+        raise InputValidationError(
+            f"Byte count must be at most {_MAX_RANDOM_BYTES:,} bytes "
+            f"({_MAX_RANDOM_BYTES // (1024 * 1024)} MiB); received {nbytes:,}."
+        )
     return secrets.token_hex(nbytes)
 
 def generate_password(
@@ -134,4 +151,9 @@ def generate_bytes_b64(nbytes: int = 32) -> str:
     """Return a standard base64 string backed by *nbytes* random bytes."""
     if nbytes <= 0:
         raise InputValidationError("Byte count must be positive.")
+    if nbytes > _MAX_RANDOM_BYTES:
+        raise InputValidationError(
+            f"Byte count must be at most {_MAX_RANDOM_BYTES:,} bytes "
+            f"({_MAX_RANDOM_BYTES // (1024 * 1024)} MiB); received {nbytes:,}."
+        )
     return base64.b64encode(secrets.token_bytes(nbytes)).decode()
