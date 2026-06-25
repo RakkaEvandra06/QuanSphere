@@ -6,8 +6,7 @@ import base64
 import secrets
 import struct
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
+from crypto_toolkit.core._aead_utils import aesgcm_context
 from crypto_toolkit.core.constants import (
     AEAD_MIN_CIPHERTEXT,
     ARGON2_MEMORY_COST,
@@ -17,7 +16,11 @@ from crypto_toolkit.core.constants import (
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
     AES_NONCE_SIZE,
+    DECRYPT_MAX_ARGON2_MEMORY_COST as _DECRYPT_MAX_ARGON2_MEMORY_COST,
+    DECRYPT_MAX_ARGON2_PARALLELISM as _DECRYPT_MAX_ARGON2_PARALLELISM,
+    DECRYPT_MAX_ARGON2_TIME_COST   as _DECRYPT_MAX_ARGON2_TIME_COST,
     ENVELOPE_VERSION,
+    PASSWORD_MIN_LENGTH,
     PBE_MAGIC as _PBE_MAGIC,
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
     PBKDF2_SALT_LEN,
@@ -32,10 +35,6 @@ from crypto_toolkit.core.exceptions import (
     InputValidationError,
 )
 from crypto_toolkit.core.kdf import (
-    ARGON2_MAX_MEMORY_COST as _ARGON2_MAX_MEMORY_COST,
-    ARGON2_MAX_PARALLELISM as _ARGON2_MAX_PARALLELISM,
-    ARGON2_MAX_TIME_COST as _ARGON2_MAX_TIME_COST,
-    _aesgcm_from_key,
     derive_key_argon2,
     derive_key_pbkdf2,
     zero_key,
@@ -43,14 +42,16 @@ from crypto_toolkit.core.kdf import (
 
 _KDF_ARGON2: bytes = b"\x01"
 _KDF_PBKDF2: bytes = b"\x02"
-_DECRYPT_MAX_TIME_COST: int = 30
-_DECRYPT_MAX_MEMORY_COST: int = 524_288   # 512 MiB in KiB
-_DECRYPT_MAX_PARALLELISM: int = 32
+
+_DECRYPT_MAX_TIME_COST: int    = _DECRYPT_MAX_ARGON2_TIME_COST
+_DECRYPT_MAX_MEMORY_COST: int  = _DECRYPT_MAX_ARGON2_MEMORY_COST
+_DECRYPT_MAX_PARALLELISM: int  = _DECRYPT_MAX_ARGON2_PARALLELISM
 
 # Lower-bound sanity checks (unchanged from original).
-_DECRYPT_MIN_TIME_COST: int = 1
-_DECRYPT_MIN_MEMORY_COST: int = 8_192    # 8 MiB in KiB
-_DECRYPT_MIN_PARALLELISM: int = 1
+_DECRYPT_MIN_TIME_COST: int    = 1
+_DECRYPT_MIN_MEMORY_COST: int  = 8_192    # 8 MiB in KiB
+_DECRYPT_MIN_PARALLELISM: int  = 1
+_MIN_PASSWORD_LENGTH: int = PASSWORD_MIN_LENGTH
 
 # Both salts must be the same length so the PBE parser can use a single offset.
 if ARGON2_SALT_LEN != PBKDF2_SALT_LEN:
@@ -119,9 +120,9 @@ def _encrypt_argon2(
         memory_cost=argon2_memory_cost,
         parallelism=argon2_parallelism,
     )
-    aad = _build_aad_argon2(derived.salt, argon2_params)
     try:
-        with _aesgcm_from_key(derived.key) as cipher:
+        aad = _build_aad_argon2(derived.salt, argon2_params)
+        with aesgcm_context(derived.key) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, aad)
     finally:
         zero_key(derived.key)
@@ -155,7 +156,7 @@ def _encrypt_pbkdf2(plaintext: bytes, password: str, nonce: bytes) -> bytes:
 
         iterations_bytes = struct.pack(">I", derived.pbkdf2_iterations)
         aad = _build_aad_pbkdf2(derived.salt, hash_tag, derived.pbkdf2_iterations)
-        with _aesgcm_from_key(derived.key) as cipher:
+        with aesgcm_context(derived.key) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, aad)
         # Return inside the try block so the finally still executes before
         # the value is handed back to the caller.
@@ -192,6 +193,33 @@ def password_encrypt(
         )
     if not password:
         raise InputValidationError("Password must not be empty.")
+    if len(password) < _MIN_PASSWORD_LENGTH:
+        raise InputValidationError(
+            f"Password is too short ({len(password)} character(s)); "
+            f"minimum is {_MIN_PASSWORD_LENGTH} characters. "
+            "A short password remains vulnerable to targeted offline attacks "
+            "even with Argon2id key stretching."
+        )
+
+    if use_argon2 and (
+        argon2_time_cost > _DECRYPT_MAX_TIME_COST
+        or argon2_memory_cost > _DECRYPT_MAX_MEMORY_COST
+        or argon2_parallelism > _DECRYPT_MAX_PARALLELISM
+    ):
+        raise InputValidationError(
+            f"Argon2 parameters exceed this toolkit's own decrypt-time "
+            f"ceiling (time_cost<={_DECRYPT_MAX_TIME_COST}, "
+            f"memory_cost<={_DECRYPT_MAX_MEMORY_COST} KiB, "
+            f"parallelism<={_DECRYPT_MAX_PARALLELISM}); received "
+            f"time_cost={argon2_time_cost}, memory_cost={argon2_memory_cost}, "
+            f"parallelism={argon2_parallelism}. Data encrypted above this "
+            "ceiling can never be decrypted by password_decrypt(), because "
+            "decrypt-time bounds are intentionally tighter than "
+            "encrypt-time bounds as a DoS guard against untrusted "
+            "envelopes. Lower the parameters, or raise DECRYPT_MAX_ARGON2_* "
+            "in constants.py if you control both ends and accept the "
+            "tradeoff."
+        )
 
     try:
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
@@ -248,6 +276,9 @@ def password_decrypt(token: str, password: str) -> bytes:
         salt = raw[offset : offset + _SALT_LEN]
         offset += _SALT_LEN
 
+        from crypto_toolkit.core.kdf import DerivedKey  # local import avoids circular
+        derived: DerivedKey | None = None
+
         if kdf_tag == _KDF_ARGON2:
             argon2_params_raw = raw[offset : offset + ARGON2_PARAMS_LEN]
             offset += ARGON2_PARAMS_LEN
@@ -295,7 +326,12 @@ def password_decrypt(token: str, password: str) -> bytes:
                 memory_cost=memory_cost,
                 parallelism=parallelism,
             )
-            aad = _build_aad_argon2(salt, argon2_params_raw)
+            try:
+                aad = _build_aad_argon2(salt, argon2_params_raw)
+                with aesgcm_context(derived.key) as cipher:
+                    plaintext = cipher.decrypt(nonce, ciphertext, aad)
+            finally:
+                zero_key(derived.key)
 
         else:  # kdf_tag == _KDF_PBKDF2
             hash_tag_byte = raw[offset : offset + 1]
@@ -333,13 +369,12 @@ def password_decrypt(token: str, password: str) -> bytes:
                 iterations=pbkdf2_iterations,
                 hash_algorithm=pbkdf2_hash,
             )
-            aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
-
-        try:
-            with _aesgcm_from_key(derived.key) as cipher:
-                plaintext = cipher.decrypt(nonce, ciphertext, aad)
-        finally:
-            zero_key(derived.key)
+            try:
+                aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
+                with aesgcm_context(derived.key) as cipher:
+                    plaintext = cipher.decrypt(nonce, ciphertext, aad)
+            finally:
+                zero_key(derived.key)
 
         return plaintext
 
