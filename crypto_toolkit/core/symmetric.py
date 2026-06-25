@@ -60,7 +60,6 @@ def _build_aad(header: bytes, associated_data: bytes | None) -> bytes:
             UserWarning,
             stacklevel=3,
         )
-        associated_data = None
 
     return header if associated_data is None else header + associated_data
 
@@ -95,7 +94,6 @@ def encrypt(
     algorithm: Algorithm = "aes-gcm",
     associated_data: bytes | None = None,
 ) -> str:
-    """Encrypt *plaintext* and return a URL-safe base64 token."""
     if not plaintext:
         raise InputValidationError(
             "Plaintext must not be empty. "
@@ -131,8 +129,17 @@ def decrypt(
 ) -> bytes:
     """Decrypt a token produced by :func:`encrypt`."""
     try:
-        raw = base64.urlsafe_b64decode(token.encode())
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode())
+
         magic_len = len(SYMMETRIC_MAGIC)
+        _HEADER_MIN_LEN: int = magic_len + 2   # magic + version byte + algo_tag byte
+        if len(raw) < _HEADER_MIN_LEN:
+            raise DecryptionError(
+                f"Token is too short to be a valid symmetric envelope "
+                f"({len(raw)} bytes; minimum header is {_HEADER_MIN_LEN} bytes). "
+                "The token is likely truncated or corrupted."
+            )
 
         if raw[:magic_len] != SYMMETRIC_MAGIC:
             raise DecryptionError("The envelope format is not recognized.")
