@@ -32,9 +32,9 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
 )
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from crypto_toolkit.core._aead_utils import aesgcm_context
 from crypto_toolkit.core.constants import (
     AEAD_MIN_CIPHERTEXT,
     AES_KEY_SIZE,
@@ -44,6 +44,7 @@ from crypto_toolkit.core.constants import (
     ASYM_X25519_TAG,
     ENVELOPE_VERSION,
     RSA_KEY_SIZE,
+    RSA_MIN_KEY_SIZE,
     RSA_PUBLIC_EXPONENT,
 )
 from crypto_toolkit.core.exceptions import (
@@ -53,8 +54,8 @@ from crypto_toolkit.core.exceptions import (
     KeyGenerationError,
 )
 from crypto_toolkit.core.kdf import (
-    _aesgcm_from_key,   # FIX BUG-03: context manager minimises Python-heap key residue
-    zero_bytes,
+    zero_key,
+    zero_bytes_buffer,
 )
 
 # Expected first byte for an uncompressed SEC1 elliptic-curve point (X9.62 §4.3.6).
@@ -68,7 +69,17 @@ _X25519_PUB_LEN: int = 32
 # Having a fixed-length constant avoids recomputing len() at every call site.
 _ASYM_ECC_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_ECC_TAG
 _ASYM_X25519_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_X25519_TAG
-_ASYM_HEADER_LEN: int = len(_ASYM_ECC_HEADER)  # 10 — same for both schemes
+
+if len(_ASYM_ECC_HEADER) != len(_ASYM_X25519_HEADER):
+    raise RuntimeError(
+        f"Invariant violated: ECC header length ({len(_ASYM_ECC_HEADER)}) != "
+        f"X25519 header length ({len(_ASYM_X25519_HEADER)}). "
+        "Both envelope types must share the same fixed header size for "
+        "_ASYM_HEADER_LEN to be valid. Update the constant or use per-scheme "
+        "offsets if the tag widths must differ."
+    )
+
+_ASYM_HEADER_LEN: int = len(_ASYM_ECC_HEADER)  # 10 — asserted equal for both schemes
 
 # Minimum envelope byte lengths.
 _ECC_MIN_ENVELOPE: int = (
@@ -99,8 +110,9 @@ _SUPPORTED_PUBLIC_KEY_TYPES: tuple[type, ...] = (
 )
 
 _VALID_RSA_KEY_SIZES: frozenset[int] = frozenset({2048, 3072, 4096})
-_MIN_RSA_KEY_SIZE: int = 2048
+# RSA_MIN_KEY_SIZE is imported from constants — no local alias needed.
 _SHA256_DIGEST_SIZE: int = 32
+_HYBRID_MAX_PLAINTEXT: int = 64 * 1024 * 1024   # 64 MiB
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -170,7 +182,7 @@ def generate_x25519_keypair() -> tuple[x25519.X25519PrivateKey, x25519.X25519Pub
     except Exception as exc:
         raise KeyGenerationError("X25519 key generation failed.") from exc
 
-# ── Serialisation helpers ─────────────────────────────────────────────────────
+# ── Serialisation ─────────────────────────────────────────────────────────────
 
 def private_key_to_pem(
     key: RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey,
@@ -207,108 +219,89 @@ def load_private_key(
     pem: bytes,
     password: bytes | None = None,
 ) -> RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey:
-    """Load an RSA, ECC (SECP256R1), or X25519 private key from PEM bytes."""
+    """Load a private key from PEM bytes."""
     try:
         key = serialization.load_pem_private_key(pem, password=password)
+        if not isinstance(key, _SUPPORTED_PRIVATE_KEY_TYPES):
+            raise InputValidationError(
+                f"Unsupported private key type: {type(key).__name__}. "
+                f"Supported types: RSA, ECC (P-256), X25519."
+            )
+        return key  # type: ignore[return-value]
+    except InputValidationError:
+        raise
     except Exception as exc:
         raise InputValidationError(
             "Failed to load private key, wrong password or corrupt PEM."
         ) from exc
 
-    if not isinstance(key, _SUPPORTED_PRIVATE_KEY_TYPES):
-        raise InputValidationError(
-            f"PEM contains an unsupported private key type: {type(key).__name__}. "
-            "Expected one of: RSA, ECC (SECP256R1), or X25519."
-        )
-
-    if isinstance(key, RSAPrivateKey) and key.key_size < _MIN_RSA_KEY_SIZE:
-        raise InputValidationError(
-            f"Loaded RSA private key is only {key.key_size} bits; "
-            f"a minimum of {_MIN_RSA_KEY_SIZE} bits is required by this toolkit. "
-            "Keys smaller than 2048 bits are considered cryptographically broken."
-        )
-
-    if isinstance(key, EllipticCurvePrivateKey) and not isinstance(key.curve, ec.SECP256R1):
-        raise InputValidationError(
-            f"Loaded ECC private key uses curve {type(key.curve).__name__!r}; "
-            "only SECP256R1 (P-256) is supported by this toolkit."
-        )
-
-    return key  # type: ignore[return-value]
-
 def load_public_key(
     pem: bytes,
 ) -> RSAPublicKey | EllipticCurvePublicKey | x25519.X25519PublicKey:
-    """Load an RSA, ECC (SECP256R1), or X25519 public key from PEM bytes."""
+    """Load a public key from PEM bytes."""
     try:
         key = serialization.load_pem_public_key(pem)
+        if not isinstance(key, _SUPPORTED_PUBLIC_KEY_TYPES):
+            raise InputValidationError(
+                f"Unsupported public key type: {type(key).__name__}. "
+                f"Supported types: RSA, ECC (P-256), X25519."
+            )
+        return key  # type: ignore[return-value]
+    except InputValidationError:
+        raise
     except Exception as exc:
         raise InputValidationError(
             "Failed to load public key, corrupt PEM."
         ) from exc
 
-    if not isinstance(key, _SUPPORTED_PUBLIC_KEY_TYPES):
-        raise InputValidationError(
-            f"PEM contains an unsupported public key type: {type(key).__name__}. "
-            "Expected one of: RSA, ECC (SECP256R1), or X25519."
-        )
-
-    if isinstance(key, RSAPublicKey) and key.key_size < _MIN_RSA_KEY_SIZE:
-        raise InputValidationError(
-            f"Loaded RSA public key is only {key.key_size} bits; "
-            f"a minimum of {_MIN_RSA_KEY_SIZE} bits is required by this toolkit. "
-            "Keys smaller than 2048 bits are considered cryptographically broken."
-        )
-
-    if isinstance(key, EllipticCurvePublicKey) and not isinstance(key.curve, ec.SECP256R1):
-        raise InputValidationError(
-            f"Loaded ECC public key uses curve {type(key.curve).__name__!r}; "
-            "only SECP256R1 (P-256) is supported by this toolkit."
-        )
-
-    return key  # type: ignore[return-value]
-
-# ── RSA encryption / decryption ───────────────────────────────────────────────
+# ── RSA encryption ────────────────────────────────────────────────────────────
 
 def rsa_encrypt(plaintext: bytes, public_key: RSAPublicKey) -> bytes:
     """Encrypt *plaintext* with *public_key* using RSA-OAEP / SHA-256."""
     if not plaintext:
         raise InputValidationError(
             "Plaintext must not be empty. "
-            "RSA-OAEP encryption of zero bytes carries no useful information."
+            "RSA-OAEP cannot encrypt zero bytes."
         )
-    max_plaintext_len: int = (public_key.key_size // 8) - 2 * _SHA256_DIGEST_SIZE - 2
-    if len(plaintext) > max_plaintext_len:
+    if public_key.key_size < RSA_MIN_KEY_SIZE:
         raise InputValidationError(
-            f"Plaintext is {len(plaintext)} bytes, but RSA-{public_key.key_size}-OAEP/"
-            f"SHA-256 can encrypt at most {max_plaintext_len} bytes. "
-            "For larger payloads use hybrid encryption: ecc_hybrid_encrypt or "
-            "x25519_hybrid_encrypt, which impose no meaningful size limit."
+            f"RSA public key is {public_key.key_size} bits; "
+            f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
+        )
+    max_plaintext = (public_key.key_size // 8) - 2 * _SHA256_DIGEST_SIZE - 2
+    if len(plaintext) > max_plaintext:
+        raise InputValidationError(
+            f"Plaintext ({len(plaintext)} bytes) exceeds the RSA-OAEP maximum "
+            f"({max_plaintext} bytes) for a {public_key.key_size}-bit key. "
+            "Use ecc_hybrid_encrypt or x25519_hybrid_encrypt for large payloads."
         )
     try:
         return public_key.encrypt(plaintext, _make_oaep_padding())
-    except ValueError as exc:
-        raise EncryptionError(
-            f"RSA encryption failed, payload may be too large: {exc}"
-        ) from exc
     except Exception as exc:
-        raise EncryptionError("RSA encryption failed.") from exc
+        raise EncryptionError("RSA-OAEP encryption failed.") from exc
 
 def rsa_decrypt(ciphertext: bytes, private_key: RSAPrivateKey) -> bytes:
     """Decrypt *ciphertext* with *private_key* using RSA-OAEP / SHA-256."""
+    if private_key.key_size < RSA_MIN_KEY_SIZE:
+        raise InputValidationError(
+            f"RSA private key is {private_key.key_size} bits; "
+            f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
+            "Keys smaller than 2048 bits are considered cryptographically broken."
+        )
     expected_len: int = (private_key.key_size + 7) // 8
     if len(ciphertext) != expected_len:
         raise DecryptionError(
             f"RSA ciphertext must be exactly {expected_len} bytes for a "
             f"{private_key.key_size}-bit key; received {len(ciphertext)} bytes. "
-            "The ciphertext may be truncated, corrupted, or intended for a "
-            "different key."
+            "Ensure you are decrypting a raw RSA-OAEP ciphertext, not a "
+            "base64-encoded or hex-encoded value."
         )
     try:
         return private_key.decrypt(ciphertext, _make_oaep_padding())
     except Exception as exc:
         raise DecryptionError(
-            "RSA decryption failed, wrong key or corrupted data."
+            "RSA-OAEP decryption failed, wrong key or corrupted ciphertext."
         ) from exc
 
 # ── ECC hybrid encryption ─────────────────────────────────────────────────────
@@ -321,18 +314,28 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             "Encrypting zero bytes produces a ciphertext containing only the "
             "authentication tag and carries no useful information."
         )
+    if len(plaintext) > _HYBRID_MAX_PLAINTEXT:
+        raise InputValidationError(
+            f"Plaintext ({len(plaintext):,} bytes) exceeds the "
+            f"{_HYBRID_MAX_PLAINTEXT // (1024 * 1024)} MiB limit for in-memory "
+            "hybrid encryption. Use file_crypto.encrypt_file_with_password for "
+            "large payloads, it streams data in 64 KiB chunks."
+        )
     _assert_secp256r1(recipient_pub, "hybrid encryption")
 
-    shared_secret: bytes | None = None
-    aes_key: bytes | None = None
+    shared_secret_bytes: bytes | None = None
+    shared_secret_buf: bytearray | None = None
+    aes_key_bytes: bytes | None = None
+    aes_key_buf: bytearray | None = None
     try:
         ephemeral_priv = ec.generate_private_key(ec.SECP256R1())
         ephemeral_pub = ephemeral_priv.public_key()
-        shared_secret = ephemeral_priv.exchange(ECDH(), recipient_pub)
+        shared_secret_bytes = ephemeral_priv.exchange(ECDH(), recipient_pub)
+        shared_secret_buf = bytearray(shared_secret_bytes)
 
-        if hmac.compare_digest(shared_secret, _ECC_ZERO_SECRET):
+        if hmac.compare_digest(shared_secret_bytes, _ECC_ZERO_SECRET):
             raise EncryptionError(
-                "ECDH key exchange produced a zero shared secret — "
+                "ECDH key exchange produced a zero shared secret, "
                 "the recipient public key may be degenerate. "
                 "Verify that the key is a valid SECP256R1 point."
             )
@@ -346,28 +349,35 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             serialization.PublicFormat.UncompressedPoint,
         )
 
-        aes_key = _hkdf_derive(
-            shared_secret,
+        aes_key_bytes = _hkdf_derive(
+            shared_secret_bytes,
             salt=ephemeral_pub_bytes,
             info=_ECC_HKDF_INFO + recipient_pub_bytes,
         )
+        aes_key_buf = bytearray(aes_key_bytes)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
         _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
-        aes_key_buf = bytearray(aes_key)
-        with _aesgcm_from_key(aes_key_buf) as cipher:
+        with aesgcm_context(aes_key_buf) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
         return _ASYM_ECC_HEADER + ephemeral_pub_bytes + nonce + ciphertext
-    except InputValidationError:
+
+    except (EncryptionError, InputValidationError):
         raise
     except Exception as exc:
         raise EncryptionError("ECC hybrid encryption failed.") from exc
     finally:
-        if shared_secret is not None:
-            zero_bytes(shared_secret)
-        if aes_key is not None:
-            zero_bytes(aes_key)
+        if shared_secret_bytes is not None:
+            zero_bytes_buffer(shared_secret_bytes)
+            shared_secret_bytes = None
+        if shared_secret_buf is not None:
+            zero_key(shared_secret_buf)   # reliable ctypes.memset wipe of bytearray
+        if aes_key_bytes is not None:
+            zero_bytes_buffer(aes_key_bytes)
+            aes_key_bytes = None
+        if aes_key_buf is not None:
+            zero_key(aes_key_buf)
 
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
     """Decrypt an envelope produced by :func:`ecc_hybrid_encrypt`."""
@@ -401,8 +411,10 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             "The envelope may be corrupt or use an unsupported point encoding."
         )
 
-    shared_secret: bytes | None = None
-    aes_key: bytes | None = None
+    shared_secret_bytes: bytes | None = None
+    shared_secret_buf: bytearray | None = None
+    aes_key_bytes: bytes | None = None
+    aes_key_buf: bytearray | None = None
     try:
         nonce_start = offset + _ECC_UNCOMPRESSED_PUB_LEN
         nonce = envelope[nonce_start : nonce_start + AES_NONCE_SIZE]
@@ -411,9 +423,11 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         ephemeral_pub = EllipticCurvePublicKey.from_encoded_point(
             ec.SECP256R1(), ephemeral_pub_bytes
         )
-        shared_secret = private_key.exchange(ECDH(), ephemeral_pub)
 
-        if hmac.compare_digest(shared_secret, _ECC_ZERO_SECRET):
+        shared_secret_bytes = private_key.exchange(ECDH(), ephemeral_pub)
+        shared_secret_buf = bytearray(shared_secret_bytes)
+
+        if hmac.compare_digest(shared_secret_bytes, _ECC_ZERO_SECRET):
             raise DecryptionError(
                 "ECDH key exchange produced a zero shared secret, "
                 "the ephemeral public key in the envelope is degenerate. "
@@ -424,18 +438,17 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             serialization.Encoding.X962,
             serialization.PublicFormat.UncompressedPoint,
         )
-        aes_key = _hkdf_derive(
-            shared_secret,
+        aes_key_bytes = _hkdf_derive(
+            shared_secret_bytes,
             salt=ephemeral_pub_bytes,
             info=_ECC_HKDF_INFO + recipient_pub_bytes,
         )
+        aes_key_buf = bytearray(aes_key_bytes)
 
-        # AAD must exactly match what ecc_hybrid_encrypt used:
-        # full envelope header + ephemeral public key bytes.
         _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
-        aes_key_buf = bytearray(aes_key)
-        with _aesgcm_from_key(aes_key_buf) as cipher:
+        with aesgcm_context(aes_key_buf) as cipher:
             return cipher.decrypt(nonce, ciphertext, _aad)
+
     except (InputValidationError, DecryptionError):
         raise
     except Exception as exc:
@@ -443,10 +456,16 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             "ECC hybrid decryption failed, wrong key or corrupted data."
         ) from exc
     finally:
-        if shared_secret is not None:
-            zero_bytes(shared_secret)
-        if aes_key is not None:
-            zero_bytes(aes_key)
+        if shared_secret_bytes is not None:
+            zero_bytes_buffer(shared_secret_bytes)
+            shared_secret_bytes = None
+        if shared_secret_buf is not None:
+            zero_key(shared_secret_buf)
+        if aes_key_bytes is not None:
+            zero_bytes_buffer(aes_key_bytes)
+            aes_key_bytes = None
+        if aes_key_buf is not None:
+            zero_key(aes_key_buf)
 
 # ── X25519 hybrid encryption ──────────────────────────────────────────────────
 
@@ -461,14 +480,26 @@ def x25519_hybrid_encrypt(
             "Encrypting zero bytes produces a ciphertext containing only the "
             "authentication tag and carries no useful information."
         )
-    shared_secret: bytes | None = None
-    aes_key: bytes | None = None
+    if len(plaintext) > _HYBRID_MAX_PLAINTEXT:
+        raise InputValidationError(
+            f"Plaintext ({len(plaintext):,} bytes) exceeds the "
+            f"{_HYBRID_MAX_PLAINTEXT // (1024 * 1024)} MiB limit for in-memory "
+            "hybrid encryption. Use file_crypto.encrypt_file_with_password for "
+            "large payloads, it streams data in 64 KiB chunks."
+        )
+
+    shared_secret_bytes: bytes | None = None
+    shared_secret_buf: bytearray | None = None
+    aes_key_bytes: bytes | None = None
+    aes_key_buf: bytearray | None = None
     try:
         ephemeral_priv = x25519.X25519PrivateKey.generate()
         ephemeral_pub = ephemeral_priv.public_key()
-        shared_secret = ephemeral_priv.exchange(recipient_pub)
 
-        if hmac.compare_digest(shared_secret, _X25519_ZERO_SECRET):
+        shared_secret_bytes = ephemeral_priv.exchange(recipient_pub)
+        shared_secret_buf = bytearray(shared_secret_bytes)
+
+        if hmac.compare_digest(shared_secret_bytes, _X25519_ZERO_SECRET):
             raise EncryptionError(
                 "X25519 key exchange produced a zero shared secret "
                 "the recipient public key is a low-order point and must be "
@@ -484,28 +515,35 @@ def x25519_hybrid_encrypt(
             serialization.PublicFormat.Raw,
         )
 
-        aes_key = _hkdf_derive(
-            shared_secret,
+        aes_key_bytes = _hkdf_derive(
+            shared_secret_bytes,
             salt=ephemeral_pub_bytes,
             info=_X25519_HKDF_INFO + recipient_pub_raw,
         )
+        aes_key_buf = bytearray(aes_key_bytes)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
         _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
-        aes_key_buf = bytearray(aes_key)
-        with _aesgcm_from_key(aes_key_buf) as cipher:
+        with aesgcm_context(aes_key_buf) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
         return _ASYM_X25519_HEADER + ephemeral_pub_bytes + nonce + ciphertext
+
     except (EncryptionError, InputValidationError):
         raise
     except Exception as exc:
         raise EncryptionError("X25519 hybrid encryption failed.") from exc
     finally:
-        if shared_secret is not None:
-            zero_bytes(shared_secret)
-        if aes_key is not None:
-            zero_bytes(aes_key)
+        if shared_secret_bytes is not None:
+            zero_bytes_buffer(shared_secret_bytes)
+            shared_secret_bytes = None
+        if shared_secret_buf is not None:
+            zero_key(shared_secret_buf)
+        if aes_key_bytes is not None:
+            zero_bytes_buffer(aes_key_bytes)
+            aes_key_bytes = None
+        if aes_key_buf is not None:
+            zero_key(aes_key_buf)
 
 def x25519_hybrid_decrypt(
     envelope: bytes,
@@ -530,8 +568,10 @@ def x25519_hybrid_decrypt(
             "not ecc_hybrid_decrypt."
         )
 
-    shared_secret: bytes | None = None
-    aes_key: bytes | None = None
+    shared_secret_bytes: bytes | None = None
+    shared_secret_buf: bytearray | None = None
+    aes_key_bytes: bytes | None = None
+    aes_key_buf: bytearray | None = None
     try:
         offset = _ASYM_HEADER_LEN
         ephemeral_pub_bytes = envelope[offset : offset + _X25519_PUB_LEN]
@@ -540,9 +580,11 @@ def x25519_hybrid_decrypt(
         ciphertext = envelope[nonce_start + AES_NONCE_SIZE :]
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
-        shared_secret = private_key.exchange(ephemeral_pub)
 
-        if hmac.compare_digest(shared_secret, _X25519_ZERO_SECRET):
+        shared_secret_bytes = private_key.exchange(ephemeral_pub)
+        shared_secret_buf = bytearray(shared_secret_bytes)
+
+        if hmac.compare_digest(shared_secret_bytes, _X25519_ZERO_SECRET):
             raise DecryptionError(
                 "X25519 key exchange produced a zero shared secret "
                 "the ephemeral public key is a low-order point and the "
@@ -553,17 +595,15 @@ def x25519_hybrid_decrypt(
             serialization.Encoding.Raw,
             serialization.PublicFormat.Raw,
         )
-        aes_key = _hkdf_derive(
-            shared_secret,
+        aes_key_bytes = _hkdf_derive(
+            shared_secret_bytes,
             salt=ephemeral_pub_bytes,
             info=_X25519_HKDF_INFO + recipient_pub_raw,
         )
+        aes_key_buf = bytearray(aes_key_bytes)
 
-        # AAD must exactly match what x25519_hybrid_encrypt used:
-        # full envelope header + ephemeral public key bytes.
         _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
-        aes_key_buf = bytearray(aes_key)
-        with _aesgcm_from_key(aes_key_buf) as cipher:
+        with aesgcm_context(aes_key_buf) as cipher:
             return cipher.decrypt(nonce, ciphertext, _aad)
 
     except (InputValidationError, DecryptionError):
@@ -573,7 +613,13 @@ def x25519_hybrid_decrypt(
             "X25519 hybrid decryption failed, wrong key or corrupted data."
         ) from exc
     finally:
-        if shared_secret is not None:
-            zero_bytes(shared_secret)
-        if aes_key is not None:
-            zero_bytes(aes_key)
+        if shared_secret_bytes is not None:
+            zero_bytes_buffer(shared_secret_bytes)
+            shared_secret_bytes = None
+        if shared_secret_buf is not None:
+            zero_key(shared_secret_buf)
+        if aes_key_bytes is not None:
+            zero_bytes_buffer(aes_key_bytes)
+            aes_key_bytes = None
+        if aes_key_buf is not None:
+            zero_key(aes_key_buf)
