@@ -5,45 +5,38 @@ __all__ = [
     "derive_key_argon2",
     "derive_key_pbkdf2",
     "PBKDF2_SUPPORTED_HASHES",
-    "zero_bytes",
     "zero_key",
+    "zero_bytes_buffer",
     "ARGON2_MAX_TIME_COST",
     "ARGON2_MAX_MEMORY_COST",
     "ARGON2_MAX_PARALLELISM",
 ]
 
 import ctypes
-import platform
 import secrets
-import threading
-import warnings
-from collections.abc import Generator
-from contextlib import contextmanager
 from typing import NamedTuple
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # needed by _aesgcm_from_key
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from crypto_toolkit.core.constants import (
     ARGON2_HASH_LEN,
     ARGON2_MEMORY_COST,
+    ARGON2_MIN_MEMORY_COST,
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
+    ARGON2_MAX_TIME_COST,
+    ARGON2_MAX_MEMORY_COST,
+    ARGON2_MAX_PARALLELISM,
     PBKDF2_HASH,
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
+    PBKDF2_MAX_ITERATIONS as _PBKDF2_MAX_ITERATIONS,
     PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
-
-# ── Public limits (exported for use by pbe.py and file_crypto.py) ─────────────
-
-ARGON2_MAX_TIME_COST: int = 1_000        # iterations
-ARGON2_MAX_MEMORY_COST: int = 2_097_152  # 2 GiB expressed in KiB
-ARGON2_MAX_PARALLELISM: int = 64         # lanes / threads
 
 # Internal cap on output length — not exported because callers use ARGON2_HASH_LEN.
 _ARGON2_MAX_HASH_LEN: int = 128          # bytes
@@ -72,97 +65,27 @@ class DerivedKey(NamedTuple):
 # ── Secure key erasure ────────────────────────────────────────────────────────
 
 def zero_key(key: bytearray) -> None:
-    """Zero a :class:`bytearray` key buffer in-place."""
-
+    """Overwrite *key* in place with zero bytes via :func:`ctypes.memset`."""
     if not isinstance(key, bytearray):
         raise TypeError(
             f"zero_key expects a bytearray; got {type(key).__name__!r}. "
-            "For bytes objects use zero_bytes (CPython only, best-effort)."
+            "Use 'del name' to drop bytes references promptly instead."
         )
     if len(key) == 0:
         return
     ctypes.memset((ctypes.c_char * len(key)).from_buffer(key), 0, len(key))
 
-
-def _find_bytes_data_offset() -> int:
-    """Probe the CPython bytes object layout to locate the raw character buffer."""
-    sentinel = b"\xAA"
-    base = id(sentinel)
-    for off in range(16, 72):
-        try:
-            if ctypes.string_at(base + off, 1) == b"\xAA":
-                return off
-        except Exception:
-            continue
-    raise RuntimeError(
-        "zero_bytes: cannot locate CPython bytes data buffer at any offset 16–71. "
-        "The CPython layout may have changed in this build."
-    )
-
-_BYTES_DATA_LOCK: threading.Lock = threading.Lock()
-
-# Module-level cache: None = not yet probed, int = confirmed offset.
-_BYTES_DATA_OFFSET: int | None = None
-
-def zero_bytes(data: bytes) -> None:
-    """Best-effort in-place zeroing of an **immutable** ``bytes`` object (CPython only)."""
-    global _BYTES_DATA_OFFSET
-
-    if not isinstance(data, bytes):
-        raise TypeError(
-            f"zero_bytes() expects an immutable bytes object; got {type(data).__name__!r}. "
-            "Use zero_key() for bytearray buffers, it is reliable across all CPython "
-            "builds and correctly uses the C-buffer protocol via ctypes.memset."
-        )
-
-    if platform.python_implementation() != "CPython":
-        warnings.warn(
-            "zero_bytes: memory wiping is a no-op on non-CPython runtimes "
-            f"(detected: {platform.python_implementation()}). "
-            "Key material may persist on the heap for the lifetime of the process. "
-            "Use a CPython interpreter if in-memory key erasure is a hard requirement.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+def zero_bytes_buffer(b: bytes) -> None:
+    """Best-effort zero of a CPython :class:`bytes` object's internal C buffer."""
+    if not isinstance(b, bytes) or len(b) == 0:
         return
-
-    if _BYTES_DATA_OFFSET is None:
-        with _BYTES_DATA_LOCK:
-            if _BYTES_DATA_OFFSET is None:
-                try:
-                    _BYTES_DATA_OFFSET = _find_bytes_data_offset()
-                except RuntimeError as exc:
-                    warnings.warn(
-                        f"zero_bytes: {exc}. Key material will not be wiped for this process.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    return
-
-    try:
-        ctypes.memset(id(data) + _BYTES_DATA_OFFSET, 0, len(data))
-    except Exception:
+    if len(b) == 1:
         return
-    wiped = ctypes.string_at(id(data) + _BYTES_DATA_OFFSET, len(data))
-    if any(b != 0 for b in wiped):
-        warnings.warn(
-            "zero_bytes: post-wipe verification failed; "
-            "key material may remain on the heap. "
-            "The computed buffer offset may be wrong for this Python build.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-# ── AEAD cipher context manager ─────────────────────────────────
-
-@contextmanager
-def _aesgcm_from_key(key: bytearray) -> Generator[AESGCM, None, None]:
-    """Context manager that constructs an :class:`AESGCM` from a bytearray key."""
-    cipher = AESGCM(bytes(key))
     try:
-        yield cipher
-    finally:
-        del cipher  # drop reference so CPython GC can collect promptly
+        p = ctypes.cast(ctypes.c_char_p(b), ctypes.POINTER(ctypes.c_char))
+        ctypes.memset(p, 0, len(b))
+    except Exception:  # pragma: no cover  — non-CPython runtime fallback
+        pass
 
 # ── Parameter validators ──────────────────────────────────────────────────────
 
@@ -186,17 +109,27 @@ def _validate_argon2_params(
             f"Argon2 time_cost must be between 1 and {ARGON2_MAX_TIME_COST}; "
             f"received {time_cost}."
         )
-    if not (8192 <= memory_cost <= ARGON2_MAX_MEMORY_COST):
+    if not (ARGON2_MIN_MEMORY_COST <= memory_cost <= ARGON2_MAX_MEMORY_COST):
         raise InputValidationError(
-            f"Argon2 memory_cost must be between 8192 and {ARGON2_MAX_MEMORY_COST} KiB "
-            f"(8 MiB – 2 GiB); received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
-            "Note: memory_cost is expressed in KiB, not MiB "
+            f"Argon2 memory_cost must be between {ARGON2_MIN_MEMORY_COST} and "
+            f"{ARGON2_MAX_MEMORY_COST} KiB "
+            f"({ARGON2_MIN_MEMORY_COST // 1024} MiB, "
+            f"{ARGON2_MAX_MEMORY_COST // 1024} MiB), "
+            f"received {memory_cost} KiB ({memory_cost / 1024:.2f} MiB). "
+            "Note: memory_cost is expressed in KiB, not MiB, "
             "pass 65536 for 64 MiB (the recommended default)."
         )
     if not (1 <= parallelism <= ARGON2_MAX_PARALLELISM):
         raise InputValidationError(
             f"Argon2 parallelism must be between 1 and {ARGON2_MAX_PARALLELISM}; "
             f"received {parallelism}."
+        )
+    if memory_cost < 8 * parallelism:
+        raise InputValidationError(
+            f"Argon2 memory_cost ({memory_cost} KiB) must be at least "
+            f"8 x parallelism ({8 * parallelism} KiB) per the Argon2 "
+            f"specification (RFC 9106); received parallelism={parallelism}. "
+            "Increase memory_cost or lower parallelism."
         )
     if not (16 <= hash_len <= _ARGON2_MAX_HASH_LEN):
         raise InputValidationError(
@@ -208,6 +141,7 @@ def _validate_pbkdf2_params(
     hash_algorithm: str,
     iterations: int,
     salt: bytes | None,
+    key_len: int,
 ) -> None:
     """Raise InputValidationError if any PBKDF2 parameter is invalid."""
     if hash_algorithm not in _PBKDF2_HASH_FACTORIES:
@@ -215,12 +149,25 @@ def _validate_pbkdf2_params(
             f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
             f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
+    if not (16 <= key_len <= _ARGON2_MAX_HASH_LEN):
+        raise InputValidationError(
+            f"PBKDF2 key_len must be between 16 and {_ARGON2_MAX_HASH_LEN} "
+            f"bytes; received {key_len}."
+        )
     min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
     if iterations < min_iters:
         raise InputValidationError(
             f"PBKDF2 iterations must be >= {min_iters:,} for {hash_algorithm!r} "
             f"(OWASP 2023 recommendation). "
             f"Received: {iterations:,}."
+        )
+    max_iters = _PBKDF2_MAX_ITERATIONS[hash_algorithm]
+    if iterations > max_iters:
+        raise InputValidationError(
+            f"PBKDF2 iterations must be <= {max_iters:,} for {hash_algorithm!r}. "
+            f"Received: {iterations:,}. Values above this threshold carry no meaningful "
+            "security benefit and risk CPU exhaustion. "
+            "Prefer Argon2id (derive_key_argon2) for high work-factor key derivation."
         )
     if salt is not None and len(salt) < PBKDF2_SALT_LEN:
         raise InputValidationError(
@@ -270,7 +217,8 @@ def derive_key_argon2(
             type=Argon2Type.ID,
         )
         key_buf = bytearray(raw_key)
-        zero_bytes(raw_key)
+        zero_bytes_buffer(raw_key)
+        del raw_key
         return DerivedKey(key=key_buf, salt=salt)
     except (InputValidationError, KeyDerivationError):
         raise
@@ -291,7 +239,7 @@ def derive_key_pbkdf2(
     if not password:
         raise InputValidationError("Password must not be empty.")
 
-    _validate_pbkdf2_params(hash_algorithm, iterations, salt)
+    _validate_pbkdf2_params(hash_algorithm, iterations, salt, key_len)
 
     if salt is None:
         salt = secrets.token_bytes(PBKDF2_SALT_LEN)
@@ -307,7 +255,8 @@ def derive_key_pbkdf2(
         )
         raw_key: bytes = kdf_obj.derive(password_bytes)
         key_buf = bytearray(raw_key)
-        zero_bytes(raw_key)
+        zero_bytes_buffer(raw_key)
+        del raw_key
         return DerivedKey(
             key=key_buf,
             salt=salt,
