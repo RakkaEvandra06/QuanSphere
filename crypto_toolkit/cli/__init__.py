@@ -1,3 +1,5 @@
-"""Hardened Crypto Toolkit — secure cryptographic operations CLI."""
+"""crypto_toolkit.cli — Typer-powered command-line interface."""
 
-__version__ = "4.0.0"
+from crypto_toolkit import __version__
+
+__all__ = ["__version__"]

@@ -21,19 +21,23 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from crypto_toolkit.core.constants import (
     ARGON2_HASH_LEN,
+    ARGON2_MAX_MEMORY_COST,
+    ARGON2_MAX_PARALLELISM,
+    ARGON2_MAX_TIME_COST,
     ARGON2_MEMORY_COST,
     ARGON2_MIN_MEMORY_COST,
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
-    ARGON2_MAX_TIME_COST,
-    ARGON2_MAX_MEMORY_COST,
-    ARGON2_MAX_PARALLELISM,
     PBKDF2_HASH,
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
     PBKDF2_SALT_LEN,
+)
+from crypto_toolkit.core.constants import (
     PBKDF2_MAX_ITERATIONS as _PBKDF2_MAX_ITERATIONS,
+)
+from crypto_toolkit.core.constants import (
     PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationError
@@ -195,7 +199,8 @@ def derive_key_argon2(
     _validate_argon2_params(time_cost, memory_cost, parallelism, hash_len, salt)
 
     try:
-        from argon2.low_level import Type as Argon2Type, hash_secret_raw  # type: ignore[import-untyped]
+        from argon2.low_level import Type as Argon2Type  # type: ignore[import-untyped]
+        from argon2.low_level import hash_secret_raw
     except ImportError as exc:
         raise KeyDerivationError(
             "argon2-cffi is required for Argon2. "
