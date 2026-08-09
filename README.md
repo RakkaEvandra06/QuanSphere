@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/animated-zerotracer-v4.svg" width="100%" alt="ZeroTracer Banner"/>
+  <img src="assets/animated-zerotracer-v5.svg" width="100%" alt="ZeroTracer Banner"/>
 </p>
 
 <div align="center">
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-4.0.0-informational)](https://github.com/RakkaEvandra06/QuanSphere/releases)
+[![Version](https://img.shields.io/badge/version-5.0.0-informational)](https://github.com/RakkaEvandra06/QuanSphere/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE.txt)
 [![Security](https://img.shields.io/badge/Security%20Rating-A%2B-brightgreen?logo=shield)](https://github.com/RakkaEvandra06/QuanSphere)
 [![Encryption](https://img.shields.io/badge/Encryption-AES--256--GCM%20%7C%20ChaCha20-blue)](https://github.com/RakkaEvandra06/QuanSphere)
@@ -55,38 +55,46 @@ QuanSphere was designed around the principle that **correct cryptography should 
 
 ```
 QuanSphere/
-├── assets/                            # Banner images and static assets
+├── assets/                                # Banner images and static assets
 ├── crypto_toolkit/
 │   ├── cli/
-│   │   ├── __init__.py                # CLI package version
-│   │   ├── main.py                    # Typer app all CLI commands
-│   │   └── output.py                  # Rich-powered terminal output helpers
+│   │   ├── __init__.py                      # CLI package version
+│   │   ├── main.py                          # Typer app registers every command module (thin assembly only)
+│   │   ├── output.py                        # Rich-powered terminal output helpers
+│   │   ├── _shared.py                       # Error-handling decorator + cross-command constants
+│   │   ├── _io_helpers.py                   # stdin/file/hex reading, atomic file writing
+│   │   ├── _password_helpers.py             # --password / --prompt-password resolution
+│   │   └── commands/                        # One file per CLI command group
+│   │       ├── version_cmd.py
+│   │       ├── symmetric_cmd.py               # encrypt, decrypt
+│   │       ├── hash_cmd.py
+│   │       ├── keygen_cmd.py                  # generate-key
+│   │       ├── signature_cmd.py               # sign, verify
+│   │       ├── rsa_cmd.py                     # rsa-encrypt, rsa-decrypt
+│   │       ├── file_cmd.py                    # encrypt-file, decrypt-file
+│   │       ├── kdf_cmd.py                     # derive-key
+│   │       └── random_cmd.py
 │   └── core/
-│       ├── asymmetric.py              # RSA-4096, ECC P-256, X25519 keygen, OAEP, hybrid ECDH
-│       ├── constants.py               # Shared algorithm parameters and envelope magic bytes
-│       ├── exceptions.py              # Typed exception hierarchy (8 exception classes)
-│       ├── file_crypto.py             # Chunked AES-256-GCM file encryption/decryption
-│       ├── hashing.py                 # SHA-256/512, SHA3-256/512, BLAKE2b/s data, stream, file
-│       ├── kdf.py                     # Argon2id and PBKDF2-HMAC key derivation
-│       ├── pbe.py                     # Password-based encryption (Argon2id or PBKDF2 + AES-GCM)
-│       ├── random_gen.py              # Cryptographically secure key, token, and password generation
-│       ├── signatures.py              # Ed25519 and RSA-PSS sign/verify + PEM serialisation
-│       └── symmetric.py               # AES-256-GCM and ChaCha20-Poly1305 authenticated encryption
-├── tests/
-│   ├── integration/
-│   │   ├── __init__.py
-│   │   └── test_cli.py                # End-to-end CLI integration tests
-│   └── unit/
-│       ├── __init__.py
-│       ├── conftest.py                # Shared fixtures
-│       ├── test_asymmetric.py
-│       ├── test_file_crypto.py
-│       ├── test_hashing.py
-│       ├── test_kdf.py
-│       ├── test_pbe.py
-│       ├── test_random_gen.py
-│       ├── test_signatures.py
-│       └── test_symmetric.py
+│       ├── asymmetric/                      # RSA-4096, ECC P-256, X25519 keygen, OAEP, hybrid ECDH
+│       │   ├── __init__.py                    # re-exports the full public API
+│       │   ├── _shared.py                     # shared envelope constants + HKDF/OAEP helpers
+│       │   ├── keys.py                        # keygen, PEM serialisation/loading
+│       │   ├── rsa_ops.py                     # direct RSA-OAEP encrypt/decrypt
+│       │   ├── ecc_hybrid.py                  # ECC (P-256) hybrid envelope
+│       │   └── x25519_hybrid.py               # X25519 hybrid envelope
+│       ├── file_crypto/                     # Chunked AES-256-GCM file encryption/decryption
+│       │   ├── __init__.py                    # re-exports the public API
+│       │   ├── _envelope.py                   # header tags, builders, parser
+│       │   ├── _chunks.py                     # chunked AES-GCM I/O loop
+│       │   └── api.py                         # encrypt_file / decrypt_file / *_with_password
+│       ├── constants.py                     # Shared algorithm parameters and envelope magic bytes
+│       ├── exceptions.py                    # Typed exception hierarchy (8 exception classes)
+│       ├── hashing.py                       # SHA-256/512, SHA3-256/512, BLAKE2b/s data, stream, file
+│       ├── kdf.py                           # Argon2id and PBKDF2-HMAC key derivation
+│       ├── pbe.py                           # Password-based encryption (Argon2id or PBKDF2 + AES-GCM)
+│       ├── random_gen.py                    # Cryptographically secure key, token, and password generation
+│       ├── signatures.py                    # Ed25519 and RSA-PSS sign/verify + PEM serialisation
+│       └── symmetric.py                     # AES-256-GCM and ChaCha20-Poly1305 authenticated encryption
 ├── LICENSE.txt
 ├── pyproject.toml
 └── README.md
@@ -377,7 +385,7 @@ Contributions are welcome. Here's how to get started:
 
 1. **Fork** the repository and create a branch from `main`.
 2. **Install** all dev dependencies: `pip install -e ".[dev]"`.
-3. **Write code** — keep changes focused on a single concern.
+3. **Write code** keep changes focused on a single concern.
 4. **Add or update tests** to cover new or changed behaviour.
 5. **Run the full suite** and confirm coverage stays at ≥ 80 %: `pytest`.
 6. **Lint** your code: `ruff check . && mypy crypto_toolkit/`.
