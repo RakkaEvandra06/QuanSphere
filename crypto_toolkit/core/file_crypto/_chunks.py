@@ -76,7 +76,6 @@ def validate_paths(src: Path, dst: Path, *, force: bool = False) -> None:
 # ── Core I/O loops ────────────────────────────────────────────────────────────
 
 def promote_tmp(tmp: Path, dst: Path, *, force: bool) -> None:
-    """Atomically promote *tmp* to *dst*."""
     if force:
         tmp.replace(dst)
         return
@@ -88,7 +87,11 @@ def promote_tmp(tmp: Path, dst: Path, *, force: bool) -> None:
             "Pass --force to overwrite it, or choose a different destination."
         )
     finally:
-        tmp.unlink(missing_ok=True)
+        # Guard unlink so it never suppresses the exception already in flight.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass  # stale .tmp file is a minor resource leak, not a security issue
 
 def encrypt_chunks(
     src: Path, dst: Path, key_buf: bytearray, header: bytes, *, force: bool = False
