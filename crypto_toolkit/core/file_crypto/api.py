@@ -34,6 +34,7 @@ from crypto_toolkit.core.constants import (
     PBKDF2_HASH_TO_TAG,
     PBKDF2_MAX_ITERATIONS,
     PBKDF2_MIN_ITERATIONS,
+    PBKDF2_HISTORICAL_MIN_ITERATIONS,
     PBKDF2_SALT_LEN,
     PBKDF2_TAG_TO_HASH,
 )
@@ -71,7 +72,7 @@ def encrypt_file(src: Path, dst: Path, key: bytes, *, force: bool = False) -> No
     validate_paths(src, dst, force=force)
     if len(key) != AES_KEY_SIZE:
         raise InputValidationError(
-            f"Key must be exactly {AES_KEY_SIZE} bytes received {len(key)}."
+            f"Key must be exactly {AES_KEY_SIZE} bytes; received {len(key)}."
         )
     file_salt = secrets.token_bytes(FILE_RAW_SALT_LEN)
     subkey = derive_raw_subkey(key, file_salt)
@@ -251,13 +252,22 @@ def decrypt_file_with_password(src: Path, dst: Path, password: str, *, force: bo
                 f"Unrecognised PBKDF2 hash tag in file header: {hash_tag!r}."
             )
 
-        max_i = PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
-        min_i = PBKDF2_MIN_ITERATIONS.get(pbkdf2_hash, 1)
-        if not (min_i <= iters <= max_i):
+        max_i      = PBKDF2_MAX_ITERATIONS[pbkdf2_hash]
+        hist_min_i = PBKDF2_HISTORICAL_MIN_ITERATIONS[pbkdf2_hash]
+
+        if iters > max_i:
             raise DecryptionError(
-                f"PBKDF2 iteration count {iters:,} in file header is outside the "
-                f"permitted range [{min_i:,}, {max_i:,}] for {pbkdf2_hash!r}. "
-                "The file may originate from a malicious or untrusted source."
+                f"PBKDF2 iteration count {iters:,} in the file header exceeds "
+                f"the maximum ({max_i:,}) for {pbkdf2_hash!r}. "
+                "The file may originate from an untrusted or malicious source."
+            )
+        if iters < hist_min_i:
+            raise DecryptionError(
+                f"PBKDF2 iteration count {iters:,} in the file header is "
+                f"critically low (absolute floor: {hist_min_i:,} for "
+                f"{pbkdf2_hash!r}). This file's key-derivation work-factor "
+                "is too weak to decrypt safely. The file was likely produced "
+                "by a tool configured with dangerously low security parameters."
             )
 
         derived = derive_key_pbkdf2(
