@@ -77,14 +77,53 @@ def generate_x25519_keypair() -> tuple[x25519.X25519PrivateKey, x25519.X25519Pub
 def private_key_to_pem(
     key: RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey,
     password: bytes | None = None,
+    *,
+    argon2_protect: bool = False,
 ) -> bytes:
-    """Serialise *key* to PKCS8 PEM, optionally encrypted with *password*."""
+    """Serialise *key* to PKCS8 PEM, optionally protected with *password*."""
     if password is not None and len(password) == 0:
         raise InputValidationError(
             "PEM encryption password must not be empty (received b''). "
             "Pass a non-empty bytes secret to encrypt the PEM, or pass "
             "password=None to produce an unencrypted PEM."
         )
+
+    if password is not None and argon2_protect:
+        # Lazy import: avoids a circular dependency at module-load time.
+        # Dependency chain: pbe → kdf → constants.  keys.py → asymmetric._shared,
+        # constants.  No cycle when the import occurs inside the function body.
+        from crypto_toolkit.core.pbe import password_encrypt  # noqa: PLC0415
+
+        try:
+            password_str = password.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "argon2_protect=True requires a UTF-8-compatible password. "
+                "The provided password bytes cannot be decoded as UTF-8. "
+                "Pass argon2_protect=False to use the standard PKCS#8 "
+                "BestAvailableEncryption scheme, which accepts arbitrary "
+                "byte passwords."
+            ) from exc
+
+        # Serialise to unencrypted PKCS8 so the PBE envelope provides all
+        # key protection.  The raw PEM is discarded immediately after wrapping.
+        raw_pem: bytes = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        try:
+            token: str = password_encrypt(raw_pem, password_str)
+        finally:
+            # best-effort: raw_pem is an immutable bytes object so ctypes
+            # zeroing is attempted but not guaranteed — see zero_bytes_buffer.
+            from crypto_toolkit.core.kdf import zero_bytes_buffer  # noqa: PLC0415
+            zero_bytes_buffer(raw_pem)
+
+        # Return as ASCII bytes; load_private_key detects the non-PEM prefix.
+        return token.encode("ascii")
+
+    # ── Legacy / backward-compatible path: library-default PKCS#8 encryption ─
     encryption: serialization.KeySerializationEncryption = (
         serialization.BestAvailableEncryption(password)
         if password is not None
@@ -109,7 +148,55 @@ def load_private_key(
     pem: bytes,
     password: bytes | None = None,
 ) -> RSAPrivateKey | EllipticCurvePrivateKey | x25519.X25519PrivateKey:
-    """Load a private key from PEM bytes."""
+    """Load a private key from PEM bytes or an Argon2-protected envelope."""
+    pem_stripped = pem.strip()
+
+    if not pem_stripped.startswith(b"-----"):
+        # The data does not begin with the standard PEM marker.  Assume it is
+        # an Argon2id+AES-GCM envelope produced by private_key_to_pem with
+        # argon2_protect=True.  Reject DER-encoded inputs with a clear message.
+        if password is None:
+            raise InputValidationError(
+                "The supplied data does not begin with '-----BEGIN' and appears "
+                "to be an Argon2-protected private key produced by "
+                "private_key_to_pem(..., argon2_protect=True). "
+                "Provide the same password used during serialisation. "
+                "If the key is DER-encoded, convert it to PEM format before "
+                "passing it to this function."
+            )
+
+        from crypto_toolkit.core.pbe import password_decrypt  # noqa: PLC0415
+
+        try:
+            password_str = password.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "Failed to decode the password as UTF-8. Argon2-protected "
+                "private keys require a UTF-8-compatible password."
+            ) from exc
+
+        try:
+            envelope_str = pem_stripped.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "Failed to decode the key data as ASCII. The data may be "
+                "corrupt or is not a valid Argon2-wrapped PEM key."
+            ) from exc
+
+        try:
+            decrypted_pem: bytes = password_decrypt(envelope_str, password_str)
+        except Exception as exc:
+            raise InputValidationError(
+                "Failed to decrypt the Argon2-protected private key. "
+                "The password may be incorrect or the envelope may be corrupt."
+            ) from exc
+
+        # The unwrapped inner PEM is unencrypted PKCS8 — do not forward the
+        # password to load_pem_private_key.
+        pem = decrypted_pem
+        password = None
+
+    # ── Standard PEM loading ──────────────────────────────────────────────────
     try:
         key = serialization.load_pem_private_key(pem, password=password)
         if not isinstance(key, _SUPPORTED_PRIVATE_KEY_TYPES):
