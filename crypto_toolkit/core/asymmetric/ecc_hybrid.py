@@ -11,6 +11,7 @@ __all__ = ["ecc_hybrid_encrypt", "ecc_hybrid_decrypt"]
 
 import hmac
 import secrets
+from typing import cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -71,7 +72,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
     try:
         ephemeral_priv = ec.generate_private_key(ec.SECP256R1())
         ephemeral_pub = ephemeral_priv.public_key()
-        shared_secret_bytes = ephemeral_priv.exchange(ECDH(), recipient_pub)
+        shared_secret_bytes = cast(bytes, ephemeral_priv.exchange(ECDH(), recipient_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
         if hmac.compare_digest(shared_secret_bytes, _ECC_ZERO_SECRET):
@@ -165,7 +166,8 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             ec.SECP256R1(), ephemeral_pub_bytes
         )
 
-        shared_secret_bytes = private_key.exchange(ECDH(), ephemeral_pub)
+        # Same cast for the decrypt path — see comment in ecc_hybrid_encrypt.
+        shared_secret_bytes = cast(bytes, private_key.exchange(ECDH(), ephemeral_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
         if hmac.compare_digest(shared_secret_bytes, _ECC_ZERO_SECRET):
