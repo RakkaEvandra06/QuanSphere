@@ -11,6 +11,7 @@ __all__ = ["x25519_hybrid_encrypt", "x25519_hybrid_decrypt"]
 
 import hmac
 import secrets
+from typing import cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -67,7 +68,10 @@ def x25519_hybrid_encrypt(
         ephemeral_priv = x25519.X25519PrivateKey.generate()
         ephemeral_pub = ephemeral_priv.public_key()
 
-        shared_secret_bytes = ephemeral_priv.exchange(recipient_pub)
+        # cast(bytes, …) narrows the type for Pyright.  See ecc_hybrid.py
+        # for a full explanation of why this is needed when the cryptography
+        # package is absent from the Pyright analysis environment.
+        shared_secret_bytes = cast(bytes, ephemeral_priv.exchange(recipient_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
         if hmac.compare_digest(shared_secret_bytes, _X25519_ZERO_SECRET):
@@ -152,7 +156,8 @@ def x25519_hybrid_decrypt(
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
 
-        shared_secret_bytes = private_key.exchange(ephemeral_pub)
+        # Same cast for the decrypt path — see comment in x25519_hybrid_encrypt.
+        shared_secret_bytes = cast(bytes, private_key.exchange(ephemeral_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
         if hmac.compare_digest(shared_secret_bytes, _X25519_ZERO_SECRET):
