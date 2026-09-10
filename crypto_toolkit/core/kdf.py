@@ -45,6 +45,10 @@ from crypto_toolkit.core.exceptions import InputValidationError, KeyDerivationEr
 # Internal cap on output length — not exported because callers use ARGON2_HASH_LEN.
 _ARGON2_MAX_HASH_LEN: int = 128          # bytes
 
+# PBKDF2 key-length ceiling — kept as a separate constant so that a future
+# change to the Argon2 limit cannot silently change the PBKDF2 limit.
+_PBKDF2_MAX_KEY_LEN: int = 128           # bytes
+
 # ── PBKDF2 hash algorithm registry ────────────────────────────────────────────
 
 _PBKDF2_HASH_FACTORIES: dict[str, type[hashes.HashAlgorithm]] = {
@@ -80,9 +84,12 @@ def zero_key(key: bytearray) -> None:
     ctypes.memset((ctypes.c_char * len(key)).from_buffer(key), 0, len(key))
 
 def zero_bytes_buffer(b: bytes) -> None:
-    """Best-effort zero of a CPython :class:`bytes` object's internal C buffer."""
+    """Attempt to overwrite the internal buffer of a *bytes* object with zeros."""
+
     if not isinstance(b, bytes) or len(b) == 0:
         return
+    # Single-byte values (0x00–0xFF) are interned by CPython; writing to their
+    # shared buffer would corrupt the interpreter's byte cache.
     if len(b) == 1:
         return
     try:
@@ -153,9 +160,9 @@ def _validate_pbkdf2_params(
             f"Unsupported PBKDF2 hash algorithm: {hash_algorithm!r}. "
             f"Valid options: {sorted(_PBKDF2_HASH_FACTORIES)}."
         )
-    if not (16 <= key_len <= _ARGON2_MAX_HASH_LEN):
+    if not (16 <= key_len <= _PBKDF2_MAX_KEY_LEN):
         raise InputValidationError(
-            f"PBKDF2 key_len must be between 16 and {_ARGON2_MAX_HASH_LEN} "
+            f"PBKDF2 key_len must be between 16 and {_PBKDF2_MAX_KEY_LEN} "
             f"bytes; received {key_len}."
         )
     min_iters = _PBKDF2_MIN_ITERATIONS[hash_algorithm]
