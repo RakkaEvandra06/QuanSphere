@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-__all__ = ["hash_data", "hash_stream", "hash_file", "mac_data", "hmac_data"]
+__all__ = ["hash_data", "hash_stream", "hash_file", "mac_data", "hmac_data", "verify_mac"]
 
 import hashlib
 import hmac as _hmac
 import warnings
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, TypeAlias
 
 from crypto_toolkit.core.constants import DEFAULT_HASH, FILE_CHUNK_SIZE, HASH_ALGORITHMS
 from crypto_toolkit.core.exceptions import HashingError, InputValidationError
 
-# Type alias for the hashlib hash object — normalised across Python versions.
-try:
-    _HashType = hashlib.HASH          # public alias available from Python 3.9+
-except AttributeError:                # pragma: no cover
-    from typing import Any
-    _HashType = Any                   # type: ignore[assignment,misc]
+class _HashProtocol(Protocol):
+    """Structural type for any hashlib hash object (blake2b, sha256, sha3_256 …)."""
+    @property
+    def digest_size(self) -> int: ...
+    @property
+    def name(self) -> str: ...
+    def update(self, data: bytes | bytearray | memoryview, /) -> None: ...
+    def digest(self) -> bytes: ...
+    def hexdigest(self) -> str: ...
+
+# _HashType is the return-type annotation used by _get_hash_obj().
+_HashType: TypeAlias = _HashProtocol
 
 _BLAKE2B_DEFAULT_DIGEST_SIZE: int = 64   # 512-bit — BLAKE2b native maximum.
 _BLAKE2S_DEFAULT_DIGEST_SIZE: int = 32   # 256-bit — BLAKE2s native maximum.
@@ -29,6 +35,7 @@ _HMAC_SUPPORTED: frozenset[str] = frozenset({
 _BLAKE2_KEYED: frozenset[str] = frozenset({"blake2b", "blake2s"})
 _BLAKE2B_MAX_KEY: int = 64   # bytes BLAKE2b native key length maximum
 _BLAKE2S_MAX_KEY: int = 32   # bytes BLAKE2s native key length maximum
+_HMAC_MIN_KEY_BYTES: int = 16  # RFC 2104 §3 recommends key length ≥ hash output; 16 B is our floor
 _HASH_MAX_CHUNK_SIZE: int = 256 * 1024 * 1024   # 256 MiB
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -213,9 +220,10 @@ def mac_data(
                 stacklevel=2,
             )
         try:
-            # hashlib.blake2b/s(data, key=key) is the canonical keyed MAC for BLAKE2.
-            # This is NOT the same as HMAC(BLAKE2) — it uses BLAKE2's built-in keying.
-            h = hashlib.new(algo, data, key=key)
+            if algo == "blake2b":
+                h: _HashProtocol = hashlib.blake2b(data, key=key)
+            else:
+                h = hashlib.blake2s(data, key=key)
             return h.hexdigest()
         except Exception as exc:
             raise HashingError("BLAKE2 keyed-hash computation failed.") from exc
@@ -225,6 +233,16 @@ def mac_data(
         raise InputValidationError(
             f"Algorithm {algorithm!r} is not supported. "
             f"Choose from: {sorted(_HMAC_SUPPORTED | _BLAKE2_KEYED)}."
+        )
+    if len(key) < _HMAC_MIN_KEY_BYTES:
+        warnings.warn(
+            f"HMAC key is only {len(key)} byte(s) for {algo!r}; "
+            "for full HMAC security the key should be at least "
+            f"{_HMAC_MIN_KEY_BYTES} bytes "
+            "(RFC 2104 §3 recommends a key at least as long as the HMAC output). "
+            "Use a longer key or derive one with derive_key_argon2() / derive_key_pbkdf2().",
+            UserWarning,
+            stacklevel=2,
         )
     try:
         mac = _hmac.new(key, data, algo)
@@ -250,3 +268,24 @@ def hmac_data(
         stacklevel=2,
     )
     return mac_data(key, data, algorithm)
+
+def verify_mac(
+    key: bytes,
+    data: bytes,
+    expected_mac: str,
+    algorithm: str = DEFAULT_HASH,
+) -> bool:
+    if not key:
+        raise InputValidationError(
+            "MAC key must not be empty. "
+            "Provide a non-empty secret key for authenticated hashing."
+        )
+    try:
+        computed = mac_data(key, data, algorithm)
+        # hmac.compare_digest performs a constant-time comparison that does not
+        # short-circuit on the first differing byte, preventing timing oracles.
+        return _hmac.compare_digest(computed, expected_mac)
+    except InputValidationError:
+        raise
+    except Exception as exc:
+        raise HashingError("MAC verification failed.") from exc
