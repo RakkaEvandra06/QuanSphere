@@ -12,6 +12,7 @@ from typing import Literal
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
 
 from crypto_toolkit.core.constants import (
+    AES_GCM_MAX_INVOCATIONS_PER_KEY,
     AES_KEY_SIZE,
     AES_NONCE_SIZE,
     AES_TAG_SIZE,
@@ -94,6 +95,7 @@ def encrypt(
     algorithm: Algorithm = "aes-gcm",
     associated_data: bytes | None = None,
 ) -> str:
+    """Encrypt *plaintext* with *key* and return a URL-safe base64 token."""
     if not plaintext:
         raise InputValidationError(
             "Plaintext must not be empty. "
