@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 from crypto_toolkit.core.constants import RSA_MIN_KEY_SIZE
 from crypto_toolkit.core.exceptions import InputValidationError, KeyGenerationError, SignatureError
 
-_RSA_LEGACY_THRESHOLD: int = 2048
+_RSA_LEGACY_THRESHOLD: int = 3072
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -92,8 +92,10 @@ def verify_ed25519_or_raise(
 def ed25519_private_key_to_pem(
     key: ed25519.Ed25519PrivateKey,
     password: bytes | None = None,
+    *,
+    argon2_protect: bool = False,
 ) -> bytes:
-    """Serialise *key* to PKCS8 PEM, optionally encrypted with *password*."""
+    """Serialise *key* to PKCS8 PEM, optionally protected with *password*."""
     if password is not None and len(password) == 0:
         raise InputValidationError(
             "PEM encryption password must not be empty (received b''). "
@@ -101,6 +103,33 @@ def ed25519_private_key_to_pem(
             "password=None to produce an unencrypted PEM."
         )
 
+    if password is not None and argon2_protect:
+        from crypto_toolkit.core.pbe import password_encrypt  # noqa: PLC0415
+
+        try:
+            password_str = password.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "argon2_protect=True requires a UTF-8-compatible password. "
+                "The provided password bytes cannot be decoded as UTF-8. "
+                "Pass argon2_protect=False to use BestAvailableEncryption, "
+                "which accepts arbitrary byte passwords."
+            ) from exc
+
+        raw_pem: bytes = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        try:
+            token: str = password_encrypt(raw_pem, password_str)
+        finally:
+            from crypto_toolkit.core.kdf import zero_bytes_buffer  # noqa: PLC0415
+            zero_bytes_buffer(raw_pem)
+
+        return token.encode("ascii")
+
+    # ── Legacy / backward-compatible path ─────────────────────────────────────
     encryption: serialization.KeySerializationEncryption = (
         serialization.BestAvailableEncryption(password)
         if password is not None
@@ -123,7 +152,49 @@ def load_ed25519_private_key(
     pem: bytes,
     password: bytes | None = None,
 ) -> ed25519.Ed25519PrivateKey:
-    """Load an Ed25519 private key from PEM bytes."""
+    """Load an Ed25519 private key from PEM bytes or an Argon2-protected envelope."""
+    pem_stripped = pem.strip()
+
+    if not pem_stripped.startswith(b"-----"):
+        if password is None:
+            raise InputValidationError(
+                "The supplied data does not begin with '-----BEGIN' and appears "
+                "to be an Argon2-protected Ed25519 key produced by "
+                "ed25519_private_key_to_pem(..., argon2_protect=True). "
+                "Provide the same password used during serialisation. "
+                "If the key is DER-encoded, convert it to PEM format first."
+            )
+
+        from crypto_toolkit.core.pbe import password_decrypt  # noqa: PLC0415
+
+        try:
+            password_str = password.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "Failed to decode the password as UTF-8. Argon2-protected "
+                "Ed25519 keys require a UTF-8-compatible password."
+            ) from exc
+
+        try:
+            envelope_str = pem_stripped.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise InputValidationError(
+                "Failed to decode the key data as ASCII. The data may be "
+                "corrupt or is not a valid Argon2-wrapped PEM key."
+            ) from exc
+
+        try:
+            decrypted_pem: bytes = password_decrypt(envelope_str, password_str)
+        except Exception as exc:
+            raise InputValidationError(
+                "Failed to decrypt the Argon2-protected Ed25519 private key. "
+                "The password may be incorrect or the envelope may be corrupt."
+            ) from exc
+
+        pem = decrypted_pem
+        password = None  # inner PEM is unencrypted PKCS8
+
+    # ── Standard PEM loading ──────────────────────────────────────────────────
     try:
         key = serialization.load_pem_private_key(pem, password=password)
         if not isinstance(key, ed25519.Ed25519PrivateKey):
@@ -160,7 +231,7 @@ def sign_rsa_pss(data: bytes, private_key: RSAPrivateKey) -> bytes:
             f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
             "Keys smaller than 2048 bits are considered cryptographically broken."
         )
-    if private_key.key_size <= _RSA_LEGACY_THRESHOLD:
+    if private_key.key_size < _RSA_LEGACY_THRESHOLD:
         warnings.warn(
             f"RSA signing key is {private_key.key_size} bits. "
             "NIST SP 800-131A Rev. 2 recommends ≥3072 bits for keys expected "
@@ -181,7 +252,7 @@ def verify_rsa_pss(data: bytes, signature: bytes, public_key: RSAPublicKey) -> b
             f"a minimum of {RSA_MIN_KEY_SIZE} bits is required. "
             "Keys smaller than 2048 bits are considered cryptographically broken."
         )
-    if public_key.key_size <= _RSA_LEGACY_THRESHOLD:
+    if public_key.key_size < _RSA_LEGACY_THRESHOLD:
         warnings.warn(
             f"RSA verification key is {public_key.key_size} bits. "
             "NIST SP 800-131A Rev. 2 recommends ≥3072 bits for keys expected "
