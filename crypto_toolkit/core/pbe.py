@@ -42,6 +42,9 @@ from crypto_toolkit.core.constants import (
     PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.constants import (
+    PBKDF2_HISTORICAL_MIN_ITERATIONS as _PBKDF2_HISTORICAL_MIN_ITERATIONS,
+)
+from crypto_toolkit.core.constants import (
     PBKDF2_TAG_TO_HASH as _PBKDF2_TAG_TO_HASH,
 )
 from crypto_toolkit.core.exceptions import (
@@ -360,7 +363,7 @@ def password_decrypt(token: str, password: str) -> bytes:
             (pbkdf2_iterations,) = struct.unpack(">I", raw[offset : offset + 4])
             offset += 4  # consume 4-byte iterations field
 
-            pbkdf2_max = _PBKDF2_MAX_ITERATIONS.get(pbkdf2_hash, 10_000_000)
+            pbkdf2_max = _PBKDF2_MAX_ITERATIONS[pbkdf2_hash]
             if pbkdf2_iterations > pbkdf2_max:
                 raise DecryptionError(
                     f"PBKDF2 iteration count {pbkdf2_iterations:,} exceeds the "
@@ -368,12 +371,14 @@ def password_decrypt(token: str, password: str) -> bytes:
                     "The token may originate from an untrusted or malicious source."
                 )
 
-            pbkdf2_min = _PBKDF2_MIN_ITERATIONS.get(pbkdf2_hash, 1)
-            if pbkdf2_iterations < pbkdf2_min:
+            pbkdf2_hist_min = _PBKDF2_HISTORICAL_MIN_ITERATIONS[pbkdf2_hash]
+            if pbkdf2_iterations < pbkdf2_hist_min:
                 raise DecryptionError(
-                    f"PBKDF2 iteration count {pbkdf2_iterations:,} is below the "
-                    f"minimum allowed ({pbkdf2_min:,}) for {pbkdf2_hash!r}. "
-                    "The token is corrupt or originates from a malicious source."
+                    f"PBKDF2 iteration count {pbkdf2_iterations:,} is critically "
+                    f"low (absolute floor: {pbkdf2_hist_min:,} for "
+                    f"{pbkdf2_hash!r}). This token's key-derivation work-factor "
+                    "is too weak to decrypt safely. The token was likely produced "
+                    "by a tool configured with dangerously low security parameters."
                 )
 
             nonce = raw[offset : offset + AES_NONCE_SIZE]
