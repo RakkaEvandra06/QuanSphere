@@ -1,0 +1,27 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+
+    "pythonVersion": "3.10",
+
+    "extraPaths": ["."],
+
+    "include": [
+    "crypto_toolkit",
+    "tests"
+    ],
+
+    "exclude": [
+    ".venv",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/*.pyc",
+    "build",
+    "dist"
+    ],
+
+    "typeCheckingMode": "basic",
+
+    "reportMissingImports": "error",
+    "reportMissingModuleSource": "warning"
+}
