@@ -1,5 +1,7 @@
 """constants.py — Shared constants for the Crypto Toolkit."""
 
+import struct
+
 __all__ = [
     # Symmetric
     "AES_KEY_SIZE",
@@ -8,6 +10,7 @@ __all__ = [
     "CHACHA_KEY_SIZE",
     "CHACHA_NONCE_SIZE",
     "AEAD_MIN_CIPHERTEXT",
+    "AES_GCM_MAX_INVOCATIONS_PER_KEY",
     # Asymmetric / RSA
     "RSA_KEY_SIZE",
     "RSA_MIN_KEY_SIZE",
@@ -39,6 +42,7 @@ __all__ = [
     "PBKDF2_TAG_TO_HASH",
     "PBKDF2_MIN_ITERATIONS",
     "PBKDF2_MAX_ITERATIONS",
+    "PBKDF2_HISTORICAL_MIN_ITERATIONS",
     # File encryption
     "FILE_CHUNK_SIZE",
     "FILE_MAX_BLOCK_SIZE",
@@ -72,6 +76,7 @@ CHACHA_NONCE_SIZE: int = 12     # RFC 8439 standard nonce length (bytes)
 
 # Minimum valid ciphertext: 16-byte GCM tag + at least 1 byte of plaintext.
 AEAD_MIN_CIPHERTEXT: int = AES_TAG_SIZE + 1   # 17 bytes
+AES_GCM_MAX_INVOCATIONS_PER_KEY: int = 2 ** 32   # ≈ 4.3 billion
 
 # ── Asymmetric / RSA ──────────────────────────────────────────────────────────
 
@@ -105,7 +110,16 @@ ARGON2_SALT_LEN: int = 16            # random salt length (bytes)
 #   I  — memory_cost (unsigned 32-bit)
 #   H  — parallelism (unsigned 16-bit)
 ARGON2_PARAMS_STRUCT: str = ">IIH"
-ARGON2_PARAMS_LEN: int = 10    # total packed length in bytes (4 + 4 + 2)
+
+ARGON2_PARAMS_LEN: int = struct.calcsize(ARGON2_PARAMS_STRUCT)
+
+# Belt-and-suspenders: catch format drift before it reaches any envelope code.
+assert ARGON2_PARAMS_LEN == 10, (
+    f"ARGON2_PARAMS_LEN ({ARGON2_PARAMS_LEN}) no longer matches the expected "
+    "10 bytes for format '>IIH' (4 + 4 + 2). If the envelope format was "
+    "intentionally changed, remove or update this assertion AND bump "
+    "FILE_ENC_VERSION and ENVELOPE_VERSION to prevent silent format corruption."
+)
 
 # ── Argon2id maximum operational bounds ──────────────────────────────────────
 
@@ -139,6 +153,13 @@ PBKDF2_MIN_ITERATIONS: dict[str, int] = {
     "sha512":   210_000,   # OWASP 2023 recommendation for PBKDF2-HMAC-SHA512
     "sha3_256": 200_000,   # SHA3-256 is ~3× slower than SHA-256 per iteration
     "sha3_512": 100_000,   # SHA3-512 is ~2× slower than SHA-512 per iteration
+}
+
+PBKDF2_HISTORICAL_MIN_ITERATIONS: dict[str, int] = {
+    "sha256":    10_000,   # Absolute floor — critically weak below this value
+    "sha512":     5_000,
+    "sha3_256":   5_000,
+    "sha3_512":   3_000,
 }
 
 PBKDF2_MAX_ITERATIONS: dict[str, int] = {
