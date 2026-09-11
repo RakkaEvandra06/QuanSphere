@@ -130,9 +130,6 @@ crypto-toolkit = "crypto_toolkit.cli.main:app"
 
 # ── Tool configuration ────────────────────────────────────────────────────────
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [tool.pytest.ini_options]
 testpaths    = ["tests"]
 addopts      = "--tb=short -q"
@@ -155,6 +152,15 @@ disallow_untyped_defs  = true
 # The cryptography hazmat layer uses abstract base classes that mypy cannot
 # always resolve through our union-type return signatures; the remaining
 # type: ignore comments in asymmetric.py are therefore intentional.
+
+[tool.pyright]
+# Secondary Pyright/Pylance config read by editors that prefer pyproject.toml
+# over pyrightconfig.json.  Values mirror pyrightconfig.json exactly.
+venvPath        = "."
+venv            = ".venv"
+pythonVersion   = "3.10"
+typeCheckingMode = "basic"
+extraPaths      = ["."]
 
 [tool.ruff]
 target-version = "py310"
