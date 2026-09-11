@@ -91,6 +91,6 @@
     <animateTransform attributeName="transform" type="translate" from="0 20" to="0 0" dur="1s" begin="2s" fill="freeze" />
   </text>
 
-  <!-- Footer -->
-  <text x="400" y="370" class="small" text-anchor="middle" opacity="0.5">ZeroTrace Security &bull; 2026</text>
+  <!-- Footer (diperbaiki: &bull; -> &#8226;) -->
+  <text x="400" y="370" class="small" text-anchor="middle" opacity="0.5">ZeroTrace Security &#8226; 2026</text>
 </svg>
