@@ -1,9 +1,4 @@
-"""api.py — Public chunked-file-encryption API.
-
-Single responsibility: orchestration. Resolves a key (raw or
-password-derived via Argon2id/PBKDF2), builds/parses the envelope header
-(_envelope.py), and delegates the actual byte-streaming to _chunks.py.
-"""
+"""api.py — Public chunked-file-encryption API."""
 
 from __future__ import annotations
 
@@ -28,12 +23,12 @@ from crypto_toolkit.core.constants import (
     DECRYPT_MAX_ARGON2_MEMORY_COST,
     DECRYPT_MAX_ARGON2_PARALLELISM,
     DECRYPT_MAX_ARGON2_TIME_COST,
+    DECRYPT_MAX_PBKDF2_ITERATIONS,
     FILE_ENC_MAGIC,
+    FILE_ENC_VERSION,
     FILE_RAW_SALT_LEN,
     PASSWORD_MIN_LENGTH,
     PBKDF2_HASH_TO_TAG,
-    PBKDF2_MAX_ITERATIONS,
-    PBKDF2_MIN_ITERATIONS,
     PBKDF2_HISTORICAL_MIN_ITERATIONS,
     PBKDF2_SALT_LEN,
     PBKDF2_TAG_TO_HASH,
@@ -42,6 +37,7 @@ from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, Inp
 from crypto_toolkit.core.file_crypto._chunks import decrypt_chunks, encrypt_chunks, validate_paths
 from crypto_toolkit.core.file_crypto._envelope import (
     KEY_ARGON2,
+    KEY_PBKDF2,
     KEY_RAW,
     argon2_header,
     derive_raw_subkey,
@@ -91,7 +87,7 @@ def decrypt_file(src: Path, dst: Path, key: bytes, *, force: bool = False) -> No
         raise InputValidationError(
             f"Key must be exactly {AES_KEY_SIZE} bytes; received {len(key)}."
         )
-    header, mode_tag, file_salt, block_start, expected_chunks = parse_header(src)
+    header, mode_tag, file_salt, block_start, expected_chunks, file_enc_version = parse_header(src)
     if mode_tag != KEY_RAW:
         raise DecryptionError(
             "This file uses a password-derived key. "
@@ -104,7 +100,10 @@ def decrypt_file(src: Path, dst: Path, key: bytes, *, force: bool = False) -> No
     zero_bytes_buffer(subkey)
     del subkey
     try:
-        decrypt_chunks(src, dst, key_buf, header, block_start, expected_chunks, force=force)
+        decrypt_chunks(
+            src, dst, key_buf, header, block_start, expected_chunks,
+            file_version=file_enc_version, force=force,
+        )
     finally:
         zero_key(key_buf)
 
@@ -189,7 +188,7 @@ def decrypt_file_with_password(src: Path, dst: Path, password: str, *, force: bo
     if not password:
         raise InputValidationError("Password must not be empty.")
 
-    header, mode_tag, _file_salt, block_start, expected_chunks = parse_header(src)
+    header, mode_tag, _file_salt, block_start, expected_chunks, file_enc_version = parse_header(src)
     # _file_salt is only meaningful for KEY_RAW envelopes (see decrypt_file);
     # password-derived modes carry their own salt inside `header` instead.
 
@@ -236,15 +235,16 @@ def decrypt_file_with_password(src: Path, dst: Path, password: str, *, force: bo
             time_cost=time_cost,
             memory_cost=memory_cost,
             parallelism=parallelism,
+            min_password_len=0,
         )
 
     else:   # KEY_PBKDF2
-        salt          = header[magic_mode_len : magic_mode_len + PBKDF2_SALT_LEN]
+        salt     = header[magic_mode_len : magic_mode_len + PBKDF2_SALT_LEN]
         hash_tag = header[
             magic_mode_len + PBKDF2_SALT_LEN : magic_mode_len + PBKDF2_SALT_LEN + 1
         ]
-        _iters_start  = magic_mode_len + PBKDF2_SALT_LEN + 1
-        (iters,)      = struct.unpack(">I", header[_iters_start : _iters_start + 4])
+        _iters_start = magic_mode_len + PBKDF2_SALT_LEN + 1
+        (iters,)     = struct.unpack(">I", header[_iters_start : _iters_start + 4])
 
         pbkdf2_hash = PBKDF2_TAG_TO_HASH.get(hash_tag)
         if pbkdf2_hash is None:
@@ -252,15 +252,15 @@ def decrypt_file_with_password(src: Path, dst: Path, password: str, *, force: bo
                 f"Unrecognised PBKDF2 hash tag in file header: {hash_tag!r}."
             )
 
-        max_i      = PBKDF2_MAX_ITERATIONS[pbkdf2_hash]
-        hist_min_i = PBKDF2_HISTORICAL_MIN_ITERATIONS[pbkdf2_hash]
-
-        if iters > max_i:
+        decrypt_max = DECRYPT_MAX_PBKDF2_ITERATIONS[pbkdf2_hash]
+        if iters > decrypt_max:
             raise DecryptionError(
                 f"PBKDF2 iteration count {iters:,} in the file header exceeds "
-                f"the maximum ({max_i:,}) for {pbkdf2_hash!r}. "
+                f"the decrypt-time ceiling ({decrypt_max:,}) for {pbkdf2_hash!r}. "
                 "The file may originate from an untrusted or malicious source."
             )
+
+        hist_min_i = PBKDF2_HISTORICAL_MIN_ITERATIONS[pbkdf2_hash]
         if iters < hist_min_i:
             raise DecryptionError(
                 f"PBKDF2 iteration count {iters:,} in the file header is "
@@ -275,9 +275,13 @@ def decrypt_file_with_password(src: Path, dst: Path, password: str, *, force: bo
             salt=salt,
             iterations=iters,
             hash_algorithm=pbkdf2_hash,
+            min_password_len=0,
         )
 
     try:
-        decrypt_chunks(src, dst, derived.key, header, block_start, expected_chunks, force=force)
+        decrypt_chunks(
+            src, dst, derived.key, header, block_start, expected_chunks,
+            file_version=file_enc_version, force=force,
+        )
     finally:
         zero_key(derived.key)
