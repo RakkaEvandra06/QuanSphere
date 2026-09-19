@@ -41,6 +41,7 @@ from crypto_toolkit.core.constants import (
     FILE_CHUNK_COUNT_SIZE,
     FILE_ENC_MAGIC,
     FILE_ENC_VERSION,
+    FILE_ENC_VERSION_LEGACY,
     FILE_MAX_BLOCK_SIZE,
     FILE_RAW_SALT_LEN,
     PBKDF2_SALT_LEN,
@@ -64,9 +65,9 @@ BLOCK_LEN_FMT:  str = ">I"
 BLOCK_LEN_SIZE: int = 4
 
 # 4-byte big-endian uint32 appended to the header inside per-block AAD.
-CHUNK_IDX_FMT: str = ">I"
+CHUNK_IDX_FMT:   str = ">I"
 CHUNK_COUNT_FMT: str = ">I"   # big-endian uint32; FILE_CHUNK_COUNT_SIZE == 4
-MAX_CHUNK_IDX: int = 0xFFFF_FFFF
+MAX_CHUNK_IDX:   int = 0xFFFF_FFFF
 
 # Minimum valid block: nonce (12 B) + GCM tag (16 B) + 1 plaintext byte = 29 B.
 MIN_BLOCK_SIZE: int = AES_NONCE_SIZE + AES_TAG_SIZE + 1
@@ -110,15 +111,10 @@ _MAX_HEADER_PEEK: int = (
         PBKDF2_SALT_LEN + 1 + 4,                  # KEY_PBKDF2: 16 + 1 + 4 = 21 B
     )
     + FILE_CHUNK_COUNT_SIZE                       # chunk-count field (4 B)
-)   # = 40 bytes (unchanged numerically: 16 == 16, both equal ARGON2_SALT_LEN's branch)
+)
 
-def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int]:
-    """Parse the file envelope header.
-
-    Returns ``(header, mode_tag, file_salt, block_start, expected_chunks)``.
-    *file_salt* is only populated for :data:`KEY_RAW` envelopes; it is
-    ``None`` for password-derived modes (their salt lives inside *header*).
-    """
+def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int, bytes]:
+    """Parse the file envelope header."""
     try:
         with src.open("rb") as f:
             peek = f.read(_MAX_HEADER_PEEK)
@@ -135,10 +131,12 @@ def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int]:
             "File format not recognised (missing FILE_ENC_MAGIC). "
             "Ensure the file was produced by crypto-toolkit encrypt-file."
         )
-    if peek[magic_len : magic_len + 1] != FILE_ENC_VERSION:
+
+    file_enc_version = peek[magic_len : magic_len + 1]
+    if file_enc_version not in (FILE_ENC_VERSION, FILE_ENC_VERSION_LEGACY):
         raise DecryptionError(
-            f"File encryption version {peek[magic_len:magic_len+1]!r} is not "
-            f"supported (expected {FILE_ENC_VERSION!r}). "
+            f"File encryption version {file_enc_version!r} is not supported "
+            f"(supported: {FILE_ENC_VERSION!r} and {FILE_ENC_VERSION_LEGACY!r}). "
             "Files produced under an older version of the toolkit must be "
             "re-encrypted to upgrade to the current format."
         )
@@ -152,14 +150,17 @@ def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int]:
         if len(peek) < needed:
             raise DecryptionError("Raw-key file header is truncated.")
         file_salt = peek[cursor : needed]
-        header = raw_header(file_salt)
+        # Rebuild the header using the *actual* version byte from the file so
+        # that the AAD used for chunk decryption matches what was written at
+        # encryption time.
+        header = FILE_ENC_MAGIC + file_enc_version + KEY_RAW + file_salt
     elif mode_tag == KEY_ARGON2:
         needed = cursor + ARGON2_SALT_LEN + ARGON2_PARAMS_LEN
         if len(peek) < needed:
             raise DecryptionError("Argon2 file header is truncated.")
         salt   = peek[cursor : cursor + ARGON2_SALT_LEN]
         params = peek[cursor + ARGON2_SALT_LEN : needed]
-        header = argon2_header(salt, params)
+        header = FILE_ENC_MAGIC + file_enc_version + KEY_ARGON2 + salt + params
     elif mode_tag == KEY_PBKDF2:
         needed = cursor + PBKDF2_SALT_LEN + 1 + 4   # salt + hash_tag + iterations
         if len(peek) < needed:
@@ -167,7 +168,7 @@ def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int]:
         salt     = peek[cursor : cursor + PBKDF2_SALT_LEN]
         hash_tag = peek[cursor + PBKDF2_SALT_LEN : cursor + PBKDF2_SALT_LEN + 1]
         (iters,) = struct.unpack(">I", peek[cursor + PBKDF2_SALT_LEN + 1 : needed])
-        header   = pbkdf2_header(salt, hash_tag, iters)
+        header   = FILE_ENC_MAGIC + file_enc_version + KEY_PBKDF2 + salt + hash_tag + struct.pack(">I", iters)
     else:
         raise DecryptionError(
             f"Unrecognised key-mode tag in file header: {mode_tag!r}. "
@@ -191,4 +192,4 @@ def parse_header(src: Path) -> tuple[bytes, bytes, bytes | None, int, int]:
         )
     block_start = chunk_count_end
 
-    return header, mode_tag, file_salt, block_start, expected_chunks
+    return header, mode_tag, file_salt, block_start, expected_chunks, file_enc_version
