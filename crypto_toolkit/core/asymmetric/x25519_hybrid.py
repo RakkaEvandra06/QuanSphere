@@ -1,9 +1,5 @@
 """x25519_hybrid.py — X25519 hybrid encryption: ephemeral Diffie-Hellman +
-HKDF-SHA-256 + AES-256-GCM.
-
-Single responsibility: the X25519 hybrid envelope only. RSA-OAEP lives in
-rsa_ops.py; the ECC (P-256) hybrid scheme lives in ecc_hybrid.py.
-"""
+HKDF-SHA-256 + AES-256-GCM."""
 
 from __future__ import annotations
 
@@ -20,6 +16,7 @@ from crypto_toolkit.core._aead_utils import aesgcm_context
 from crypto_toolkit.core.asymmetric._shared import (
     _ASYM_HEADER_LEN,
     _ASYM_X25519_HEADER,
+    _ASYM_X25519_HEADER_V2,
     _HYBRID_MAX_PLAINTEXT,
     _X25519_HKDF_INFO,
     _X25519_MIN_ENVELOPE,
@@ -31,6 +28,7 @@ from crypto_toolkit.core.constants import (
     AES_NONCE_SIZE,
     ASYM_MAGIC,
     ASYM_X25519_TAG,
+    ENVELOPE_V2,
     ENVELOPE_VERSION,
 )
 from crypto_toolkit.core.exceptions import (
@@ -68,9 +66,6 @@ def x25519_hybrid_encrypt(
         ephemeral_priv = x25519.X25519PrivateKey.generate()
         ephemeral_pub = ephemeral_priv.public_key()
 
-        # cast(bytes, …) narrows the type for Pyright.  See ecc_hybrid.py
-        # for a full explanation of why this is needed when the cryptography
-        # package is absent from the Pyright analysis environment.
         shared_secret_bytes = cast(bytes, ephemeral_priv.exchange(recipient_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
@@ -98,11 +93,13 @@ def x25519_hybrid_encrypt(
         aes_key_buf = bytearray(aes_key_bytes)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
+
+        _aad = _ASYM_X25519_HEADER_V2 + ephemeral_pub_bytes + recipient_pub_raw
         with aesgcm_context(aes_key_buf) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
-        return _ASYM_X25519_HEADER + ephemeral_pub_bytes + nonce + ciphertext
+        # Wire format is unchanged from v1 except the version byte in the header.
+        return _ASYM_X25519_HEADER_V2 + ephemeral_pub_bytes + nonce + ciphertext
 
     except (EncryptionError, InputValidationError):
         raise
@@ -134,8 +131,14 @@ def x25519_hybrid_decrypt(
     magic_len = len(ASYM_MAGIC)
     if envelope[:magic_len] != ASYM_MAGIC:
         raise DecryptionError("Envelope format not recognised (missing ASYM_MAGIC).")
-    if envelope[magic_len : magic_len + 1] != ENVELOPE_VERSION:
-        raise DecryptionError("Envelope version not supported.")
+
+    version_byte = envelope[magic_len : magic_len + 1]
+    if version_byte not in (ENVELOPE_VERSION, ENVELOPE_V2):
+        raise DecryptionError(
+            f"Envelope version {version_byte!r} is not supported "
+            f"(accepted: {ENVELOPE_VERSION!r} for v1, {ENVELOPE_V2!r} for v2)."
+        )
+
     if envelope[magic_len + 1 : magic_len + 2] != ASYM_X25519_TAG:
         raise DecryptionError(
             "Envelope algorithm tag mismatch: expected X25519 (0x02). "
@@ -156,7 +159,6 @@ def x25519_hybrid_decrypt(
 
         ephemeral_pub = x25519.X25519PublicKey.from_public_bytes(ephemeral_pub_bytes)
 
-        # Same cast for the decrypt path — see comment in x25519_hybrid_encrypt.
         shared_secret_bytes = cast(bytes, private_key.exchange(ephemeral_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
@@ -178,7 +180,11 @@ def x25519_hybrid_decrypt(
         )
         aes_key_buf = bytearray(aes_key_bytes)
 
-        _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
+        if version_byte == ENVELOPE_V2:
+            _aad = _ASYM_X25519_HEADER_V2 + ephemeral_pub_bytes + recipient_pub_raw
+        else:
+            _aad = _ASYM_X25519_HEADER + ephemeral_pub_bytes
+
         with aesgcm_context(aes_key_buf) as cipher:
             return cipher.decrypt(nonce, ciphertext, _aad)
 
