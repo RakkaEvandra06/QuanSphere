@@ -124,6 +124,18 @@ def private_key_to_pem(
         return token.encode("ascii")
 
     # ── Legacy / backward-compatible path: library-default PKCS#8 encryption ─
+    if password is not None:
+        import warnings as _warnings
+        _warnings.warn(
+            "private_key_to_pem() is using BestAvailableEncryption for PKCS#8 "
+            "key protection.  The actual KDF (typically PBKDF2-HMAC or scrypt) "
+            "and its iteration count are determined by the installed OpenSSL "
+            "version and may be weaker than expected.  Use "
+            "argon2_protect=True for explicit Argon2id protection with "
+            "well-defined, high-security parameters.",
+            UserWarning,
+            stacklevel=2,
+        )
     encryption: serialization.KeySerializationEncryption = (
         serialization.BestAvailableEncryption(password)
         if password is not None
