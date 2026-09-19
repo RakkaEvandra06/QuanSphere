@@ -18,7 +18,13 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from crypto_toolkit.core.constants import AES_NONCE_SIZE, FILE_CHUNK_SIZE
+from crypto_toolkit.core.constants import (
+    AES_NONCE_SIZE,
+    AES_TAG_SIZE,
+    FILE_CHUNK_SIZE,
+    FILE_ENC_VERSION,
+    FILE_ENC_VERSION_LEGACY,
+)
 from crypto_toolkit.core.exceptions import (
     DecryptionError,
     EncryptionError,
@@ -133,6 +139,7 @@ def encrypt_chunks(
                             header
                             + struct.pack(CHUNK_COUNT_FMT, total_chunks)
                             + struct.pack(CHUNK_IDX_FMT, chunk_idx)
+                            + struct.pack(">I", len(chunk))
                         )
                         try:
                             ct = cipher.encrypt(nonce, chunk, aad)
@@ -180,8 +187,10 @@ def decrypt_chunks(
     block_start: int,
     expected_chunks: int,
     *,
+    file_version: bytes,
     force: bool = False,
 ) -> None:
+    """Decrypt a chunked file produced by :func:`encrypt_chunks`."""
     try:
         cipher = AESGCM(key_buf)
     except Exception as exc:
@@ -223,11 +232,22 @@ def decrypt_chunks(
                                 f"expected {block_len} B, read {len(block)} B."
                             )
                         nonce, ct = block[:AES_NONCE_SIZE], block[AES_NONCE_SIZE:]
-                        aad = (
-                            header
-                            + struct.pack(CHUNK_COUNT_FMT, expected_chunks)
-                            + struct.pack(CHUNK_IDX_FMT, chunk_idx)
-                        )
+
+                        if file_version == FILE_ENC_VERSION:
+                            expected_plaintext_len = block_len - AES_NONCE_SIZE - AES_TAG_SIZE
+                            aad = (
+                                header
+                                + struct.pack(CHUNK_COUNT_FMT, expected_chunks)
+                                + struct.pack(CHUNK_IDX_FMT, chunk_idx)
+                                + struct.pack(">I", expected_plaintext_len)
+                            )
+                        else:
+                            aad = (
+                                header
+                                + struct.pack(CHUNK_COUNT_FMT, expected_chunks)
+                                + struct.pack(CHUNK_IDX_FMT, chunk_idx)
+                            )
+
                         try:
                             fout.write(cipher.decrypt(nonce, ct, aad))
                         except InvalidTag:
