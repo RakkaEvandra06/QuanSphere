@@ -1,10 +1,5 @@
 """_shared.py — Internal constants and helpers shared across the asymmetric
-sub-package (keys.py, rsa_ops.py, ecc_hybrid.py, x25519_hybrid.py).
-
-Nothing in this module is part of the public API; it exists purely so the
-five sibling modules don't each redefine the same envelope-layout constants
-and small crypto helpers (single source of truth, DRY).
-"""
+sub-package (keys.py, rsa_ops.py, ecc_hybrid.py, x25519_hybrid.py)."""
 
 from __future__ import annotations
 
@@ -24,6 +19,7 @@ from crypto_toolkit.core.constants import (
     ASYM_ECC_TAG,
     ASYM_MAGIC,
     ASYM_X25519_TAG,
+    ENVELOPE_V2,
     ENVELOPE_VERSION,
 )
 from crypto_toolkit.core.exceptions import InputValidationError
@@ -35,9 +31,9 @@ _ECC_UNCOMPRESSED_PUB_LEN: int = 65
 # X25519 raw public key is always 32 bytes (RFC 7748 §6.1).
 _X25519_PUB_LEN: int = 32
 
-# Header layout: ASYM_MAGIC (8 B) + ENVELOPE_VERSION (1 B) + algo_tag (1 B) = 10 bytes.
-# Having a fixed-length constant avoids recomputing len() at every call site.
-_ASYM_ECC_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_ECC_TAG
+# ── v1 headers (ENVELOPE_VERSION = \x01) ─────────────────────────────────────
+# Header layout: ASYM_MAGIC (8 B) + version (1 B) + algo_tag (1 B) = 10 bytes.
+_ASYM_ECC_HEADER:    bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_ECC_TAG
 _ASYM_X25519_HEADER: bytes = ASYM_MAGIC + ENVELOPE_VERSION + ASYM_X25519_TAG
 
 if len(_ASYM_ECC_HEADER) != len(_ASYM_X25519_HEADER):
@@ -49,9 +45,27 @@ if len(_ASYM_ECC_HEADER) != len(_ASYM_X25519_HEADER):
         "offsets if the tag widths must differ."
     )
 
-_ASYM_HEADER_LEN: int = len(_ASYM_ECC_HEADER)  # 10 — asserted equal for both schemes
+_ASYM_HEADER_LEN: int = len(_ASYM_ECC_HEADER)  # 10 — asserted equal for all variants
+_ASYM_ECC_HEADER_V2:    bytes = ASYM_MAGIC + ENVELOPE_V2 + ASYM_ECC_TAG
+_ASYM_X25519_HEADER_V2: bytes = ASYM_MAGIC + ENVELOPE_V2 + ASYM_X25519_TAG
 
-# Minimum envelope byte lengths.
+# v2 headers must be the same length as v1 headers so _ASYM_HEADER_LEN applies
+# to both without any offset adjustment in the envelope parsers.
+if len(_ASYM_ECC_HEADER_V2) != len(_ASYM_ECC_HEADER):
+    raise RuntimeError(
+        f"Invariant violated: v2 ECC header ({len(_ASYM_ECC_HEADER_V2)} B) "
+        f"differs in length from v1 ECC header ({len(_ASYM_ECC_HEADER)} B). "
+        "Both versions must share the same header byte-width so that "
+        "_ASYM_HEADER_LEN remains valid as a single offset constant."
+    )
+if len(_ASYM_X25519_HEADER_V2) != len(_ASYM_X25519_HEADER):
+    raise RuntimeError(
+        f"Invariant violated: v2 X25519 header ({len(_ASYM_X25519_HEADER_V2)} B) "
+        f"differs in length from v1 X25519 header ({len(_ASYM_X25519_HEADER)} B)."
+    )
+
+# Minimum envelope byte lengths (identical for v1 and v2 — recipient pub is in
+# AAD, not in the envelope wire format, so no size adjustment is needed).
 _ECC_MIN_ENVELOPE: int = (
     _ASYM_HEADER_LEN + _ECC_UNCOMPRESSED_PUB_LEN + AES_NONCE_SIZE + AEAD_MIN_CIPHERTEXT
 )
@@ -60,12 +74,12 @@ _X25519_MIN_ENVELOPE: int = (
 )
 
 # HKDF domain separators keep ECC and X25519 key streams cryptographically independent.
-_ECC_HKDF_INFO: bytes = b"crypto-toolkit-ecc-hybrid"
+_ECC_HKDF_INFO:    bytes = b"crypto-toolkit-ecc-hybrid"
 _X25519_HKDF_INFO: bytes = b"crypto-toolkit-x25519-hybrid"
 
 # A low-order X25519 point produces an all-zero shared secret — reject it.
 _X25519_ZERO_SECRET: bytes = b"\x00" * 32
-_ECC_ZERO_SECRET: bytes = b"\x00" * 32
+_ECC_ZERO_SECRET:    bytes = b"\x00" * 32
 
 # Supported key types accepted by the load_* helpers (keys.py).
 _SUPPORTED_PRIVATE_KEY_TYPES: tuple[type, ...] = (
@@ -119,6 +133,8 @@ __all__ = [
     "_X25519_PUB_LEN",
     "_ASYM_ECC_HEADER",
     "_ASYM_X25519_HEADER",
+    "_ASYM_ECC_HEADER_V2",
+    "_ASYM_X25519_HEADER_V2",
     "_ASYM_HEADER_LEN",
     "_ECC_MIN_ENVELOPE",
     "_X25519_MIN_ENVELOPE",
