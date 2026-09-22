@@ -83,6 +83,29 @@ def _shuffle_inplace(chars: list[str]) -> None:
         j = secrets.randbelow(i + 1)
         chars[i], chars[j] = chars[j], chars[i]
 
+_HARD_MIN_LENGTH: int = 12
+
+def _minimum_viable_length(
+    use_uppercase: bool,
+    use_digits: bool,
+    use_symbols: bool,
+) -> int:
+    """Return the shortest length guaranteed to pass the entropy gate for these settings."""
+    alphabet = _build_alphabet(use_uppercase, use_digits, use_symbols)
+    # One required character per enabled category (same count as _required_chars()).
+    req_count = 1 + int(use_uppercase) + int(use_digits) + int(use_symbols)
+    dummy_required = ["x"] * req_count  # values irrelevant; only len() matters
+    for length in range(req_count, 200):
+        if (
+            _compute_entropy(
+                length, alphabet, dummy_required,
+                use_uppercase, use_digits, use_symbols,
+            )
+            >= _MIN_PASSWORD_ENTROPY_BITS
+        ):
+            return length
+    return 200  # unreachable in practice with any real alphabet
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def generate_key(size: int = AES_KEY_SIZE) -> bytes:
@@ -127,19 +150,26 @@ def generate_password(
     use_symbols: bool = True,
 ) -> str:
     """Generate a cryptographically secure random password."""
-    if length < 12:
-        raise InputValidationError("Password length must be at least 12 for security.")
+    min_viable = max(_HARD_MIN_LENGTH, _minimum_viable_length(use_uppercase, use_digits, use_symbols))
+    if length < min_viable:
+        raise InputValidationError(
+            f"Password length {length} is too short for the selected character "
+            f"classes to reach {_MIN_PASSWORD_ENTROPY_BITS} bits of entropy "
+            f"(minimum required: {min_viable} characters). "
+            "Increase --size or enable additional character classes "
+            "(--uppercase, --digits, --symbols)."
+        )
 
     alphabet = _build_alphabet(use_uppercase, use_digits, use_symbols)
     required = _required_chars(use_uppercase, use_digits, use_symbols)
 
     entropy = _compute_entropy(length, alphabet, required, use_uppercase, use_digits, use_symbols)
-    if entropy < _MIN_PASSWORD_ENTROPY_BITS:
+    if entropy < _MIN_PASSWORD_ENTROPY_BITS:  # pragma: no cover
         raise InputValidationError(
-            f"The requested password has insufficient entropy "
-            f"({entropy:.0f} bits; minimum is {_MIN_PASSWORD_ENTROPY_BITS} bits). "
-            "Increase the length or enable additional character classes "
-            "(uppercase, digits, symbols)."
+            f"Internal error: the entropy gate fired after the length pre-check "
+            f"({entropy:.1f} bits < {_MIN_PASSWORD_ENTROPY_BITS} required). "
+            "Please report this as a bug (length={length}, uppercase={use_uppercase}, "
+            "digits={use_digits}, symbols={use_symbols})."
         )
 
     free_chars = [secrets.choice(alphabet) for _ in range(length - len(required))]
