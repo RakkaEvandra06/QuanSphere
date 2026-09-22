@@ -5,7 +5,9 @@ from __future__ import annotations
 __all__ = ["Algorithm", "encrypt", "decrypt"]
 
 import base64
+import hashlib
 import secrets
+import threading
 import warnings
 from typing import Literal
 
@@ -38,6 +40,46 @@ _ALGO_META: dict[str, tuple[bytes, int, int, int]] = {
     "aes-gcm":  (_AES_TAG,    AES_KEY_SIZE,   AES_NONCE_SIZE,   _AES_MIN_PAYLOAD),
     "chacha20": (_CHACHA_TAG, CHACHA_KEY_SIZE, CHACHA_NONCE_SIZE, _CHACHA_MIN_PAYLOAD),
 }
+
+class _AesGcmKeyTracker:
+    """Thread-safe per-key AES-GCM invocation counter."""
+
+    _WARN_AT: int = int(AES_GCM_MAX_INVOCATIONS_PER_KEY * 0.9)
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = {}
+
+    @staticmethod
+    def _key_id(key: bytes) -> str:
+        """Return a non-reversible identifier for *key* via SHA-256."""
+        return hashlib.sha256(key).hexdigest()
+
+    def record_and_check(self, key: bytes) -> None:
+        """Increment the invocation count for *key* and enforce the NIST limit."""
+        key_id = self._key_id(key)
+        with self._lock:
+            count = self._counts.get(key_id, 0) + 1
+            self._counts[key_id] = count
+
+        if count >= AES_GCM_MAX_INVOCATIONS_PER_KEY:
+            raise EncryptionError(
+                f"This AES-GCM key has been used for {count:,} encryption(s), "
+                f"reaching the NIST SP 800-38D §8.3 safe limit of "
+                f"{AES_GCM_MAX_INVOCATIONS_PER_KEY:,} invocations per key. "
+                "Rotate the key immediately before any further encryption."
+            )
+        if count >= self._WARN_AT:
+            warnings.warn(
+                f"AES-GCM key is approaching the NIST SP 800-38D §8.3 "
+                f"safe invocation limit: {count:,} / "
+                f"{AES_GCM_MAX_INVOCATIONS_PER_KEY:,} invocations used. "
+                "Plan an immediate key rotation.",
+                UserWarning,
+                stacklevel=4,
+            )
+
+_key_tracker = _AesGcmKeyTracker()
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -111,6 +153,10 @@ def encrypt(
 
     try:
         _validate_key(key, key_size)
+
+        if algo_tag == _AES_TAG:
+            _key_tracker.record_and_check(key)
+
         nonce = secrets.token_bytes(nonce_size)
 
         header = SYMMETRIC_MAGIC + ENVELOPE_VERSION + algo_tag
