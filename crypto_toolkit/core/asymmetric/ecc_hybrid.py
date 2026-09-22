@@ -1,9 +1,5 @@
 """ecc_hybrid.py — ECC (SECP256R1) hybrid encryption: ephemeral ECDH +
-HKDF-SHA-256 + AES-256-GCM.
-
-Single responsibility: the ECC hybrid envelope only. RSA-OAEP lives in
-rsa_ops.py; the X25519 hybrid scheme lives in x25519_hybrid.py.
-"""
+HKDF-SHA-256 + AES-256-GCM."""
 
 from __future__ import annotations
 
@@ -24,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
 from crypto_toolkit.core._aead_utils import aesgcm_context
 from crypto_toolkit.core.asymmetric._shared import (
     _ASYM_ECC_HEADER,
+    _ASYM_ECC_HEADER_V2,
     _ASYM_HEADER_LEN,
     _ECC_HKDF_INFO,
     _ECC_MIN_ENVELOPE,
@@ -38,6 +35,7 @@ from crypto_toolkit.core.constants import (
     AES_NONCE_SIZE,
     ASYM_ECC_TAG,
     ASYM_MAGIC,
+    ENVELOPE_V2,
     ENVELOPE_VERSION,
 )
 from crypto_toolkit.core.exceptions import (
@@ -46,7 +44,6 @@ from crypto_toolkit.core.exceptions import (
     InputValidationError,
 )
 from crypto_toolkit.core.kdf import zero_bytes_buffer, zero_key
-
 
 def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) -> bytes:
     """Encrypt *plaintext* for *recipient_pub* using ephemeral ECDH + AES-GCM."""
@@ -99,11 +96,13 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
         aes_key_buf = bytearray(aes_key_bytes)
 
         nonce = secrets.token_bytes(AES_NONCE_SIZE)
-        _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
+
+        _aad = _ASYM_ECC_HEADER_V2 + ephemeral_pub_bytes + recipient_pub_bytes
         with aesgcm_context(aes_key_buf) as cipher:
             ciphertext = cipher.encrypt(nonce, plaintext, _aad)
 
-        return _ASYM_ECC_HEADER + ephemeral_pub_bytes + nonce + ciphertext
+        # Wire format is unchanged from v1 except the version byte in the header.
+        return _ASYM_ECC_HEADER_V2 + ephemeral_pub_bytes + nonce + ciphertext
 
     except (EncryptionError, InputValidationError):
         raise
@@ -114,7 +113,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             zero_bytes_buffer(shared_secret_bytes)
             shared_secret_bytes = None
         if shared_secret_buf is not None:
-            zero_key(shared_secret_buf)   # reliable ctypes.memset wipe of bytearray
+            zero_key(shared_secret_buf)
         if aes_key_bytes is not None:
             zero_bytes_buffer(aes_key_bytes)
             aes_key_bytes = None
@@ -122,7 +121,7 @@ def ecc_hybrid_encrypt(plaintext: bytes, recipient_pub: EllipticCurvePublicKey) 
             zero_key(aes_key_buf)
 
 def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) -> bytes:
-    """Decrypt an envelope produced by :func:`ecc_hybrid_encrypt`."""
+    """Decrypt an envelope produced by :func:`ecc_hybrid_encrypt."""
     _assert_secp256r1(private_key, "hybrid decryption")
 
     if len(envelope) < _ECC_MIN_ENVELOPE:
@@ -134,8 +133,14 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
     magic_len = len(ASYM_MAGIC)
     if envelope[:magic_len] != ASYM_MAGIC:
         raise DecryptionError("Envelope format not recognised (missing ASYM_MAGIC).")
-    if envelope[magic_len : magic_len + 1] != ENVELOPE_VERSION:
-        raise DecryptionError("Envelope version not supported.")
+
+    version_byte = envelope[magic_len : magic_len + 1]
+    if version_byte not in (ENVELOPE_VERSION, ENVELOPE_V2):
+        raise DecryptionError(
+            f"Envelope version {version_byte!r} is not supported "
+            f"(accepted: {ENVELOPE_VERSION!r} for v1, {ENVELOPE_V2!r} for v2)."
+        )
+
     if envelope[magic_len + 1 : magic_len + 2] != ASYM_ECC_TAG:
         raise DecryptionError(
             "Envelope algorithm tag mismatch: expected ECC (0x01). "
@@ -166,7 +171,6 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
             ec.SECP256R1(), ephemeral_pub_bytes
         )
 
-        # Same cast for the decrypt path — see comment in ecc_hybrid_encrypt.
         shared_secret_bytes = cast(bytes, private_key.exchange(ECDH(), ephemeral_pub))
         shared_secret_buf = bytearray(shared_secret_bytes)
 
@@ -188,7 +192,11 @@ def ecc_hybrid_decrypt(envelope: bytes, private_key: EllipticCurvePrivateKey) ->
         )
         aes_key_buf = bytearray(aes_key_bytes)
 
-        _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
+        if version_byte == ENVELOPE_V2:
+            _aad = _ASYM_ECC_HEADER_V2 + ephemeral_pub_bytes + recipient_pub_bytes
+        else:
+            _aad = _ASYM_ECC_HEADER + ephemeral_pub_bytes
+
         with aesgcm_context(aes_key_buf) as cipher:
             return cipher.decrypt(nonce, ciphertext, _aad)
 
