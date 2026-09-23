@@ -30,16 +30,13 @@ from crypto_toolkit.core.constants import (
     DECRYPT_MAX_ARGON2_TIME_COST as _DECRYPT_MAX_ARGON2_TIME_COST,
 )
 from crypto_toolkit.core.constants import (
+    DECRYPT_MAX_PBKDF2_ITERATIONS as _DECRYPT_MAX_PBKDF2_ITERATIONS,
+)
+from crypto_toolkit.core.constants import (
     PBE_MAGIC as _PBE_MAGIC,
 )
 from crypto_toolkit.core.constants import (
     PBKDF2_HASH_TO_TAG as _PBKDF2_HASH_TO_TAG,
-)
-from crypto_toolkit.core.constants import (
-    PBKDF2_MAX_ITERATIONS as _PBKDF2_MAX_ITERATIONS,
-)
-from crypto_toolkit.core.constants import (
-    PBKDF2_MIN_ITERATIONS as _PBKDF2_MIN_ITERATIONS,
 )
 from crypto_toolkit.core.constants import (
     PBKDF2_HISTORICAL_MIN_ITERATIONS as _PBKDF2_HISTORICAL_MIN_ITERATIONS,
@@ -344,6 +341,7 @@ def password_decrypt(token: str, password: str) -> bytes:
                 time_cost=time_cost,
                 memory_cost=memory_cost,
                 parallelism=parallelism,
+                min_password_len=0,
             )
             try:
                 aad = _build_aad_argon2(salt, argon2_params_raw)
@@ -363,11 +361,12 @@ def password_decrypt(token: str, password: str) -> bytes:
             (pbkdf2_iterations,) = struct.unpack(">I", raw[offset : offset + 4])
             offset += 4  # consume 4-byte iterations field
 
-            pbkdf2_max = _PBKDF2_MAX_ITERATIONS[pbkdf2_hash]
-            if pbkdf2_iterations > pbkdf2_max:
+            decrypt_pbkdf2_max = _DECRYPT_MAX_PBKDF2_ITERATIONS[pbkdf2_hash]
+            if pbkdf2_iterations > decrypt_pbkdf2_max:
                 raise DecryptionError(
                     f"PBKDF2 iteration count {pbkdf2_iterations:,} exceeds the "
-                    f"maximum allowed ({pbkdf2_max:,}) for {pbkdf2_hash!r}. "
+                    f"decrypt-time ceiling ({decrypt_pbkdf2_max:,}) for "
+                    f"{pbkdf2_hash!r}. "
                     "The token may originate from an untrusted or malicious source."
                 )
 
@@ -389,6 +388,7 @@ def password_decrypt(token: str, password: str) -> bytes:
                 password, salt=salt,
                 iterations=pbkdf2_iterations,
                 hash_algorithm=pbkdf2_hash,
+                min_password_len=0,
             )
             try:
                 aad = _build_aad_pbkdf2(salt, hash_tag_byte, pbkdf2_iterations)
