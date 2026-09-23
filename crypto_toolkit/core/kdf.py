@@ -29,6 +29,7 @@ from crypto_toolkit.core.constants import (
     ARGON2_PARALLELISM,
     ARGON2_SALT_LEN,
     ARGON2_TIME_COST,
+    PASSWORD_MIN_LENGTH,
     PBKDF2_HASH,
     PBKDF2_ITERATIONS,
     PBKDF2_KEY_LEN,
@@ -198,10 +199,20 @@ def derive_key_argon2(
     memory_cost: int = ARGON2_MEMORY_COST,
     parallelism: int = ARGON2_PARALLELISM,
     hash_len: int = ARGON2_HASH_LEN,
+    min_password_len: int = PASSWORD_MIN_LENGTH,
 ) -> DerivedKey:
     """Derive a key from *password* using Argon2id."""
     if not password:
         raise InputValidationError("Password must not be empty.")
+
+    pw_bytes_for_len = password.encode() if isinstance(password, str) else password
+    if min_password_len > 0 and len(pw_bytes_for_len) < min_password_len:
+        raise InputValidationError(
+            f"Password is too short ({len(pw_bytes_for_len)} byte(s)); "
+            f"minimum is {min_password_len} bytes. "
+            "Pass min_password_len=0 for programmatic high-entropy secrets "
+            "that are not user-supplied passwords."
+        )
 
     _validate_argon2_params(time_cost, memory_cost, parallelism, hash_len, salt)
 
@@ -246,10 +257,20 @@ def derive_key_pbkdf2(
     iterations: int = PBKDF2_ITERATIONS,
     key_len: int = PBKDF2_KEY_LEN,
     hash_algorithm: str = PBKDF2_HASH,
+    min_password_len: int = PASSWORD_MIN_LENGTH,
 ) -> DerivedKey:
     """Derive a key from *password* using PBKDF2-HMAC."""
     if not password:
         raise InputValidationError("Password must not be empty.")
+
+    pw_bytes_for_len = password.encode() if isinstance(password, str) else password
+    if min_password_len > 0 and len(pw_bytes_for_len) < min_password_len:
+        raise InputValidationError(
+            f"Password is too short ({len(pw_bytes_for_len)} byte(s)); "
+            f"minimum is {min_password_len} bytes. "
+            "Pass min_password_len=0 for programmatic high-entropy secrets "
+            "that are not user-supplied passwords."
+        )
 
     _validate_pbkdf2_params(hash_algorithm, iterations, salt, key_len)
 
