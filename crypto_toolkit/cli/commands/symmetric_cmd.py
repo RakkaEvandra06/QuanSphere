@@ -43,6 +43,14 @@ def register(app: typer.Typer) -> None:
         password: Optional[str] = typer.Option(
             None, "--password", "-p", help="Derive key from password (Argon2id).", hide_input=True,
         ),
+        password_env: Optional[str] = typer.Option(
+            None, "--password-env",
+            help=(
+                "Name of an environment variable containing the password. "
+                "Avoids shell-history exposure. "
+                "[dim]E.g. --password-env MY_PASS_VAR[/dim]"
+            ),
+        ),
         algorithm: SymAlgo = typer.Option(
             SymAlgo.aes_gcm, "--algo", "-a", help="Cipher algorithm."
         ),
@@ -61,16 +69,28 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Encrypt data using AES-256-GCM or ChaCha20-Poly1305."""
+        # F-05 — warn when plaintext is supplied as a positional argument:
+        # the string is visible in shell history, /proc/<pid>/cmdline, and
+        # system audit logs.  --stdin or --input-file are the safe alternatives.
+        if plaintext is not None:
+            output.warn(
+                "Plaintext supplied as a command-line argument. "
+                "This value is visible in shell history (~/.bash_history, "
+                "~/.zsh_history) and /proc/<pid>/cmdline while the process "
+                "is running. For sensitive data use --stdin or --input-file."
+            )
         data = _read_plaintext(plaintext, stdin, input_file)
 
-        if (prompt_password or password) and key_hex:
+        if (prompt_password or password or password_env) and key_hex:
             output.warn(
                 "Both --password/--prompt-password and --key were provided; "
                 "--password takes priority and --key will be ignored."
             )
 
-        if prompt_password or password:
-            resolved = _resolve_password(password, prompt_password, confirm=True)
+        if prompt_password or password or password_env:
+            resolved = _resolve_password(
+                password, prompt_password, password_env=password_env, confirm=True
+            )
             if algorithm != SymAlgo.aes_gcm:
                 output.error(
                     f"[bold]--algo {algorithm.value!r}[/bold] cannot be combined with "
@@ -105,6 +125,14 @@ def register(app: typer.Typer) -> None:
         password: Optional[str] = typer.Option(
             None, "--password", "-p", help="Password used during encryption.", hide_input=True
         ),
+        password_env: Optional[str] = typer.Option(
+            None, "--password-env",
+            help=(
+                "Name of an environment variable containing the password. "
+                "Avoids shell-history exposure. "
+                "[dim]E.g. --password-env MY_PASS_VAR[/dim]"
+            ),
+        ),
         prompt_password: bool = typer.Option(
             False, "--prompt-password", help="Interactively prompt for a password."
         ),
@@ -125,17 +153,24 @@ def register(app: typer.Typer) -> None:
             output.error("Provide a token argument or use --stdin.")
             raise typer.Exit(1)
 
-        if (prompt_password or password) and key_hex:
+        if (prompt_password or password or password_env) and key_hex:
             output.warn(
                 "Both --password/--prompt-password and --key were provided; "
                 "--password takes priority and --key will be ignored."
             )
 
-        if prompt_password or password:
+        if prompt_password or password or password_env:
             resolved = _resolve_password(
-                password, prompt_password, confirm=False, enforce_min_length=False
+                password, prompt_password,
+                password_env=password_env,
+                confirm=False, enforce_min_length=False,
             )
-            plaintext = pbe.password_decrypt(raw_token, resolved)
+            # enforce_min_length=False: the CLI already resolves the password
+            # without a length check (enforce_min_length=False above) for
+            # backward-compatibility with ciphertexts created before the
+            # minimum-length policy was introduced.  The library default is
+            # True; we opt out here on the CLI decrypt path only.
+            plaintext = pbe.password_decrypt(raw_token, resolved, enforce_min_length=False)
         elif key_hex:
             key = _parse_hex(key_hex, "--key", sensitive=True)
             plaintext = symmetric.decrypt(raw_token, key)
