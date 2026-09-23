@@ -48,16 +48,18 @@ __all__ = [
     "FILE_MAX_BLOCK_SIZE",
     "FILE_CHUNK_COUNT_SIZE",
     "FILE_RAW_SALT_LEN",
-    # Decrypt-time KDF ceilings (untrusted-input hardening — tighter than the
-    # encryption-time maximums above)
+    # Decrypt-time KDF ceilings
     "DECRYPT_MAX_ARGON2_TIME_COST",
     "DECRYPT_MAX_ARGON2_MEMORY_COST",
     "DECRYPT_MAX_ARGON2_PARALLELISM",
+    "DECRYPT_MAX_PBKDF2_ITERATIONS",
     # Envelope markers
     "ENVELOPE_VERSION",
+    "ENVELOPE_V2",
     "SYMMETRIC_MAGIC",
     "FILE_ENC_MAGIC",
     "FILE_ENC_VERSION",
+    "FILE_ENC_VERSION_LEGACY",
     "ASYM_MAGIC",
     "ASYM_ECC_TAG",
     "ASYM_X25519_TAG",
@@ -169,6 +171,13 @@ PBKDF2_MAX_ITERATIONS: dict[str, int] = {
     "sha3_512": 1_500_000,
 }
 
+DECRYPT_MAX_PBKDF2_ITERATIONS: dict[str, int] = {
+    "sha256":   2_000_000,   # ~4–7 s at ceiling; default (600 k) is well below
+    "sha512":     700_000,
+    "sha3_256":   600_000,
+    "sha3_512":   300_000,
+}
+
 # ── File encryption ───────────────────────────────────────────────────────────
 
 # Maximum plaintext bytes read per encryption pass (write side).
@@ -186,10 +195,13 @@ FILE_RAW_SALT_LEN: int = 16
 
 # ── Envelope format markers ───────────────────────────────────────────────────
 
-ENVELOPE_VERSION: bytes = b"\x01"    # single-byte version tag present in all envelopes
+ENVELOPE_VERSION: bytes = b"\x01"    # single-byte version tag — symmetric, PBE, and
+ENVELOPE_V2: bytes = b"\x02"
 SYMMETRIC_MAGIC: bytes = b"CTK-SYM"
 FILE_ENC_MAGIC: bytes = b"CTK-FILE"
-FILE_ENC_VERSION: bytes = b"\x04"
+FILE_ENC_VERSION: bytes = b"\x05"
+# Legacy version accepted during decryption for backward compatibility.
+FILE_ENC_VERSION_LEGACY: bytes = b"\x04"
 
 ASYM_MAGIC: bytes = b"CTK-ASYM"
 ASYM_ECC_TAG: bytes = b"\x01"
