@@ -9,10 +9,10 @@ from contextlib import contextmanager
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-
 @contextmanager
 def aesgcm_context(key: bytearray) -> Generator[AESGCM, None, None]:
-    """Scoped :class:`AESGCM` cipher constructed from a *key* bytearray."""
+    """Yield an :class:`~cryptography.hazmat.primitives.ciphers.aead.AESGCM` cipher
+    initialised from *key*, then release the cipher object on exit."""
     cipher = AESGCM(key)
     try:
         yield cipher
