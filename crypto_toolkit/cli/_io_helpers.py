@@ -1,10 +1,6 @@
 """_io_helpers.py — Reading plaintext/tokens/keys from stdin, files, or CLI
 arguments, and writing results back out (atomically, to a file or to the
-terminal).
-
-Single responsibility: I/O plumbing only. Password prompting and
-asymmetric-keypair-specific writing live in _password_helpers.py.
-"""
+terminal)."""
 
 from __future__ import annotations
 
@@ -222,7 +218,13 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o644, force: bool = F
                     "Pass --force to overwrite it, or choose a different destination."
                 )
             finally:
-                tmp.unlink(missing_ok=True)
+                # Guard unlink so it never suppresses the exception already in
+                # flight (e.g. an OSError from a read-only filesystem would
+                # otherwise replace the FileOperationError raised above).
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass  # stale .tmp file is a minor resource leak
 
         try:
             dir_fd = _os.open(str(path.parent), _os.O_RDONLY)
@@ -255,7 +257,10 @@ def _atomic_write(path: Path, data: bytes, *, mode: int = 0o644, force: bool = F
             except OSError:
                 pass
 
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass  # stale .tmp file is a minor resource leak
 
         if isinstance(exc, OSError):
             raise FileOperationError(f"Failed to write file '{path}': {exc}") from exc
