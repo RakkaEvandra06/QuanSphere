@@ -1,21 +1,17 @@
 """_password_helpers.py — Password and key-password prompting/resolution,
-plus the shared asymmetric-keypair writer used by the generate-key command.
-
-Single responsibility: turning CLI password flags (--password,
---prompt-password, --key-password, --prompt-key-password) into resolved
-secrets, with consistent shell-history warnings. Generic file/stdin I/O
-lives in _io_helpers.py.
-"""
+plus the shared asymmetric-keypair writer used by the generate-key command."""
 
 from __future__ import annotations
 
 __all__ = [
     "_warn_cli_password",
+    "_warn_cli_password_env",
     "_resolve_password",
     "_resolve_key_password",
     "_write_asymmetric_keypair",
 ]
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -31,22 +27,59 @@ def _warn_cli_password() -> None:
     output.warn(
         "Password provided as a CLI argument, it may appear in shell "
         "history and the process list. Use "
-        "[bold]--prompt-password[/bold] for sensitive passwords."
+        "[bold]--prompt-password[/bold] or [bold]--password-env[/bold] "
+        "for sensitive passwords."
     )
+
+
+def _warn_cli_password_env(env_var: str) -> None:
+    """Emit an informational note when a password is read from an env variable."""
+    output.warn(
+        f"Password read from environment variable [bold]{env_var!r}[/bold]. "
+        "Env-var passwords do not appear in shell history but are visible in "
+        "/proc/<pid>/environ on Linux. Use [bold]--prompt-password[/bold] "
+        "for the highest security."
+    )
+
 
 def _resolve_password(
     password: Optional[str],
     prompt_password: bool,
     *,
+    password_env: Optional[str] = None,
     confirm: bool = False,
     enforce_min_length: bool = True,
 ) -> str:
-    """Return the effective password, prompting interactively when requested."""
+    """Return the effective password, resolved from one of three sources."""
+    # ── Source resolution ─────────────────────────────────────────────────────
     if prompt_password:
+        # Highest-security path: always wins regardless of other flags.
         password = typer.prompt("Password", hide_input=True, confirmation_prompt=confirm)
+
+    elif password_env:
+        env_value: Optional[str] = os.environ.get(password_env)
+        if not env_value:
+            output.error(
+                f"Environment variable {password_env!r} is not set or is empty. "
+                "Set it before running this command, e.g.:\n"
+                f"  export {password_env}='your-password'\n"
+                "Or use [bold]--prompt-password[/bold] for an interactive prompt."
+            )
+            raise typer.Exit(1)
+        if password:
+            output.warn(
+                f"Both [bold]--password[/bold] and [bold]--password-env[/bold] "
+                f"were supplied. Using the env-var value from {password_env!r}; "
+                "the [bold]--password[/bold] argument is ignored."
+            )
+        _warn_cli_password_env(password_env)
+        password = env_value
+
     elif password:
+        # Least-safe path: direct CLI arg.
         _warn_cli_password()
 
+    # ── Common validation ─────────────────────────────────────────────────────
     if not password:
         output.error("Password must not be empty.")
         raise typer.Exit(1)
