@@ -27,6 +27,10 @@ def register(app: typer.Typer) -> None:
             None, "--password", "-p", help="Derive key from password (embedded in output).",
             hide_input=True,
         ),
+        password_env: Optional[str] = typer.Option(
+            None, "--password-env",
+            help="Name of an environment variable containing the password. Avoids shell-history exposure.",
+        ),
         prompt_password: bool = typer.Option(
             False, "--prompt-password", help="Interactively prompt for a password."
         ),
@@ -36,13 +40,15 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Encrypt a file with AES-256-GCM using a raw key or password (Argon2id/PBKDF2)."""
-        if (prompt_password or password) and key_hex:
+        if (prompt_password or password or password_env) and key_hex:
             output.warn(
                 "Both --password/--prompt-password and --key were provided; "
                 "--password takes priority and --key will be ignored."
             )
-        if prompt_password or password:
-            resolved = _resolve_password(password, prompt_password, confirm=True)
+        if prompt_password or password or password_env:
+            resolved = _resolve_password(
+                password, prompt_password, password_env=password_env, confirm=True
+            )
             file_crypto.encrypt_file_with_password(
                 src, dst, resolved, use_argon2=not use_pbkdf2, force=force
             )
@@ -68,6 +74,10 @@ def register(app: typer.Typer) -> None:
         password: Optional[str] = typer.Option(
             None, "--password", "-p", help="Password used during encryption.", hide_input=True
         ),
+        password_env: Optional[str] = typer.Option(
+            None, "--password-env",
+            help="Name of an environment variable containing the password. Avoids shell-history exposure.",
+        ),
         prompt_password: bool = typer.Option(
             False, "--prompt-password", help="Interactively prompt for a password."
         ),
@@ -76,18 +86,24 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Decrypt a file encrypted with [bold]encrypt-file[/bold]."""
-        if (prompt_password or password) and key_hex:
+        if (prompt_password or password or password_env) and key_hex:
             output.warn(
                 "Both --password/--prompt-password and --key were provided; "
                 "--password takes priority and --key will be ignored."
             )
-        if prompt_password or password:
+        if prompt_password or password or password_env:
             # enforce_min_length=False: same rationale as the symmetric decrypt
             # command — decryption must never be blocked by a write-time policy.
             resolved = _resolve_password(
-                password, prompt_password, confirm=False, enforce_min_length=False
+                password, prompt_password,
+                password_env=password_env, confirm=False, enforce_min_length=False,
             )
-            file_crypto.decrypt_file_with_password(src, dst, resolved, force=force)
+            # enforce_min_length=False: same rationale as symmetric decrypt —
+            # backward-compatibility for files encrypted before the password
+            # minimum-length policy was enforced at the library level.
+            file_crypto.decrypt_file_with_password(
+                src, dst, resolved, force=force, enforce_min_length=False
+            )
             output.success(f"Decrypted: {src} -> {dst}")
         elif key_hex:
             key = _parse_hex(key_hex, "--key", sensitive=True)
