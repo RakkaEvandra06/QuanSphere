@@ -3,8 +3,12 @@
 import pytest
 
 from crypto_toolkit.core import asymmetric
-from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, KeyGenerationError
-
+from crypto_toolkit.core.exceptions import (
+    DecryptionError,
+    EncryptionError,
+    InputValidationError,
+    KeyGenerationError,
+)
 
 class TestRsaKeypair:
     def test_generates_correctly(self) -> None:
@@ -42,7 +46,6 @@ class TestRsaKeypair:
         with pytest.raises(InputValidationError):
             asymmetric.load_private_key(pem, password=b"wrong")
 
-
 class TestRsaEncryptDecrypt:
     @pytest.fixture()
     def keypair(self):
@@ -54,8 +57,11 @@ class TestRsaEncryptDecrypt:
         assert asymmetric.rsa_decrypt(ct, priv) == b"hello RSA"
 
     def test_oversized_payload_raises(self, keypair) -> None:
+        # rsa_encrypt validates payload length before attempting any RSA
+        # operation, so it raises InputValidationError (not EncryptionError)
+        # when the plaintext is too large for the key size.
         _, pub = keypair
-        with pytest.raises(EncryptionError):
+        with pytest.raises(InputValidationError):
             asymmetric.rsa_encrypt(b"X" * 1000, pub)
 
     def test_wrong_key_raises(self, keypair) -> None:
@@ -64,7 +70,6 @@ class TestRsaEncryptDecrypt:
         ct = asymmetric.rsa_encrypt(b"data", pub)
         with pytest.raises(DecryptionError):
             asymmetric.rsa_decrypt(ct, priv2)
-
 
 class TestEccHybrid:
     @pytest.fixture()
