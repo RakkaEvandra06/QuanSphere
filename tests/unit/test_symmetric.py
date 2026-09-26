@@ -1,12 +1,10 @@
 """Unit tests for symmetric encryption (AES-256-GCM and ChaCha20-Poly1305)."""
 
 import pytest
-
 from crypto_toolkit.core import symmetric
 from crypto_toolkit.core.constants import AES_KEY_SIZE, CHACHA_KEY_SIZE
 from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, InputValidationError
 from crypto_toolkit.core.random_gen import generate_key
-
 
 class TestAesGcm:
     def test_encrypt_decrypt_roundtrip(self) -> None:
@@ -55,16 +53,18 @@ class TestAesGcm:
             symmetric.encrypt(b"x", b"tooshort")
 
     def test_empty_plaintext(self) -> None:
+        # Empty plaintext is intentionally rejected: encrypting zero bytes
+        # produces a ciphertext that carries no useful information (only the
+        # GCM authentication tag), which is almost certainly a caller mistake.
         key = generate_key(AES_KEY_SIZE)
-        token = symmetric.encrypt(b"", key)
-        assert symmetric.decrypt(token, key) == b""
+        with pytest.raises(InputValidationError):
+            symmetric.encrypt(b"", key)
 
     def test_large_plaintext(self) -> None:
         key = generate_key(AES_KEY_SIZE)
         data = b"A" * (1024 * 1024)  # 1 MiB
         token = symmetric.encrypt(data, key)
         assert symmetric.decrypt(token, key) == data
-
 
 class TestChaCha20:
     def test_roundtrip(self) -> None:
