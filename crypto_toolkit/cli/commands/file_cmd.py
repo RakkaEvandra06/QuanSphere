@@ -92,18 +92,11 @@ def register(app: typer.Typer) -> None:
                 "--password takes priority and --key will be ignored."
             )
         if prompt_password or password or password_env:
-            # enforce_min_length=False: same rationale as the symmetric decrypt
-            # command — decryption must never be blocked by a write-time policy.
             resolved = _resolve_password(
                 password, prompt_password,
                 password_env=password_env, confirm=False, enforce_min_length=False,
             )
-            # enforce_min_length=False: same rationale as symmetric decrypt —
-            # backward-compatibility for files encrypted before the password
-            # minimum-length policy was enforced at the library level.
-            file_crypto.decrypt_file_with_password(
-                src, dst, resolved, force=force, enforce_min_length=False
-            )
+            file_crypto.decrypt_file_with_password(src, dst, resolved, force=force)
             output.success(f"Decrypted: {src} -> {dst}")
         elif key_hex:
             key = _parse_hex(key_hex, "--key", sensitive=True)
