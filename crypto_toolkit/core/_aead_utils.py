@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["aesgcm_context"]
 
+import ctypes
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -11,10 +12,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 @contextmanager
 def aesgcm_context(key: bytearray) -> Generator[AESGCM, None, None]:
-    """Yield an :class:`~cryptography.hazmat.primitives.ciphers.aead.AESGCM` cipher
-    initialised from *key*, then release the cipher object on exit."""
+    """Yield an :class:`~cryptography.hazmat.primitives.ciphers.aead.AESGCM`
+    cipher initialised from *key*, then zero *key* and release the cipher
+    object on exit."""
     cipher = AESGCM(key)
     try:
         yield cipher
     finally:
         del cipher
+        if isinstance(key, bytearray) and len(key) > 0:
+            ctypes.memset((ctypes.c_char * len(key)).from_buffer(key), 0, len(key))
