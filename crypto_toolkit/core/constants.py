@@ -1,5 +1,6 @@
 """constants.py — Shared constants for the Crypto Toolkit."""
 
+import datetime
 import struct
 
 __all__ = [
@@ -11,6 +12,7 @@ __all__ = [
     "CHACHA_NONCE_SIZE",
     "AEAD_MIN_CIPHERTEXT",
     "AES_GCM_MAX_INVOCATIONS_PER_KEY",
+    "RECOMMENDED_MAX_KEY_INVOCATIONS",
     # Asymmetric / RSA
     "RSA_KEY_SIZE",
     "RSA_MIN_KEY_SIZE",
@@ -64,7 +66,10 @@ __all__ = [
     "ASYM_ECC_TAG",
     "ASYM_X25519_TAG",
     "PBE_MAGIC",
+    "PBE_ACCEPTED_VERSIONS",
     "PASSWORD_MIN_LENGTH",
+    # Deprecation / migration
+    "V1_ACCEPTANCE_DEADLINE",
 ]
 
 # ── Symmetric encryption ──────────────────────────────────────────────────────
@@ -79,6 +84,10 @@ CHACHA_NONCE_SIZE: int = 12     # RFC 8439 standard nonce length (bytes)
 # Minimum valid ciphertext: 16-byte GCM tag + at least 1 byte of plaintext.
 AEAD_MIN_CIPHERTEXT: int = AES_TAG_SIZE + 1   # 17 bytes
 AES_GCM_MAX_INVOCATIONS_PER_KEY: int = 2 ** 32   # ≈ 4.3 billion
+
+# ── Key-rotation recommendation ────────────────────────────────
+
+RECOMMENDED_MAX_KEY_INVOCATIONS: int = 1_000_000
 
 # ── Asymmetric / RSA ──────────────────────────────────────────────────────────
 
@@ -208,7 +217,12 @@ ASYM_ECC_TAG: bytes = b"\x01"
 ASYM_X25519_TAG: bytes = b"\x02"
 
 PBE_MAGIC: bytes = b"CTK-PBE"
+PBE_ACCEPTED_VERSIONS: frozenset[bytes] = frozenset({ENVELOPE_VERSION, ENVELOPE_V2})
 
 # ── Password policy ───────────────────────────────────────────────────────────
 
 PASSWORD_MIN_LENGTH: int = 12
+
+# ── Deprecation / migration ─────────────────────────────────────
+
+V1_ACCEPTANCE_DEADLINE: datetime.date = datetime.date(2027, 6, 30)
