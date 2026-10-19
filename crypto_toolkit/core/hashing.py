@@ -31,7 +31,7 @@ _HMAC_SUPPORTED: frozenset[str] = frozenset({
     "sha256", "sha512", "sha3_256", "sha3_512",
 })
 
-# BLAKE2 variants are routed to their native keyed mode inside hmac_data.
+# BLAKE2 variants are routed to their native keyed mode inside mac_data.
 _BLAKE2_KEYED: frozenset[str] = frozenset({"blake2b", "blake2s"})
 _BLAKE2B_MAX_KEY: int = 64   # bytes BLAKE2b native key length maximum
 _BLAKE2S_MAX_KEY: int = 32   # bytes BLAKE2s native key length maximum
@@ -201,6 +201,7 @@ def mac_data(
     algo = algorithm.lower()
 
     # ── BLAKE2: native keyed-hash mode ───────────────────────────────────────
+
     if algo in _BLAKE2_KEYED:
         max_key_len = _BLAKE2B_MAX_KEY if algo == "blake2b" else _BLAKE2S_MAX_KEY
         if len(key) > max_key_len:
@@ -275,6 +276,7 @@ def verify_mac(
     expected_mac: str,
     algorithm: str = DEFAULT_HASH,
 ) -> bool:
+    """Verify a MAC produced by :func:`mac_data` in constant time."""
     if not key:
         raise InputValidationError(
             "MAC key must not be empty. "
