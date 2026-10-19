@@ -21,6 +21,7 @@ from crypto_toolkit.core.constants import (
     CHACHA_KEY_SIZE,
     CHACHA_NONCE_SIZE,
     ENVELOPE_VERSION,
+    RECOMMENDED_MAX_KEY_INVOCATIONS,
     SYMMETRIC_MAGIC,
 )
 from crypto_toolkit.core.exceptions import DecryptionError, EncryptionError, InputValidationError
@@ -41,10 +42,14 @@ _ALGO_META: dict[str, tuple[bytes, int, int, int]] = {
     "chacha20": (_CHACHA_TAG, CHACHA_KEY_SIZE, CHACHA_NONCE_SIZE, _CHACHA_MIN_PAYLOAD),
 }
 
-class _AesGcmKeyTracker:
-    """Thread-safe per-key AES-GCM invocation counter."""
+
+class _PerKeyInvocationTracker:
+    """Thread-safe per-key invocation counter for AEAD algorithms using random nonces.""".format(RECOMMENDED_MAX_KEY_INVOCATIONS)
 
     _WARN_AT: int = int(AES_GCM_MAX_INVOCATIONS_PER_KEY * 0.9)
+    _MAX: int = AES_GCM_MAX_INVOCATIONS_PER_KEY
+    _MAX_TRACKED_KEYS: int = 10_000
+    _SAFE_EVICT_THRESHOLD: int = int(AES_GCM_MAX_INVOCATIONS_PER_KEY * 0.1)
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -55,31 +60,58 @@ class _AesGcmKeyTracker:
         """Return a non-reversible identifier for *key* via SHA-256."""
         return hashlib.sha256(key).hexdigest()
 
-    def record_and_check(self, key: bytes) -> None:
+    def record_and_check(self, key: bytes, *, algorithm: str = "AEAD") -> None:
         """Increment the invocation count for *key* and enforce the NIST limit."""
         key_id = self._key_id(key)
         with self._lock:
             count = self._counts.get(key_id, 0) + 1
             self._counts[key_id] = count
+            # Evict the oldest-inserted entry when the cap is reached to prevent
+            # unbounded memory growth.  Python 3.7+ dicts preserve insertion
+            # order, so next(iter(...)) reliably returns the oldest key.
+            if len(self._counts) > self._MAX_TRACKED_KEYS:
+                oldest_key_id = next(iter(self._counts))
+                oldest_count = self._counts[oldest_key_id]
+                if oldest_count >= self._SAFE_EVICT_THRESHOLD:
+                    # Refuse to silently evict a key that is approaching the
+                    # NIST limit — losing its count would remove the guard.
+                    warnings.warn(
+                        f"{algorithm} key tracker is at capacity "
+                        f"({self._MAX_TRACKED_KEYS:,} keys tracked) and cannot "
+                        f"safely evict the oldest key: it already has "
+                        f"{oldest_count:,} recorded invocation(s), which is above "
+                        f"the safe-eviction floor of "
+                        f"{self._SAFE_EVICT_THRESHOLD:,} "
+                        f"({self._SAFE_EVICT_THRESHOLD / AES_GCM_MAX_INVOCATIONS_PER_KEY:.0%} "
+                        "of the NIST SP 800-38D limit). "
+                        "Rotate that key immediately, or increase "
+                        "_MAX_TRACKED_KEYS if you legitimately track this many "
+                        f"concurrent {algorithm} keys.",
+                        UserWarning,
+                        stacklevel=4,
+                    )
+                else:
+                    self._counts.pop(oldest_key_id)
 
-        if count >= AES_GCM_MAX_INVOCATIONS_PER_KEY:
+        if count >= self._MAX:
             raise EncryptionError(
-                f"This AES-GCM key has been used for {count:,} encryption(s), "
+                f"This {algorithm} key has been used for {count:,} encryption(s), "
                 f"reaching the NIST SP 800-38D §8.3 safe limit of "
-                f"{AES_GCM_MAX_INVOCATIONS_PER_KEY:,} invocations per key. "
+                f"{self._MAX:,} invocations per key. "
                 "Rotate the key immediately before any further encryption."
             )
         if count >= self._WARN_AT:
             warnings.warn(
-                f"AES-GCM key is approaching the NIST SP 800-38D §8.3 "
+                f"{algorithm} key is approaching the NIST SP 800-38D §8.3 "
                 f"safe invocation limit: {count:,} / "
-                f"{AES_GCM_MAX_INVOCATIONS_PER_KEY:,} invocations used. "
+                f"{self._MAX:,} invocations used. "
                 "Plan an immediate key rotation.",
                 UserWarning,
                 stacklevel=4,
             )
 
-_key_tracker = _AesGcmKeyTracker()
+_aes_gcm_tracker:  _PerKeyInvocationTracker = _PerKeyInvocationTracker()
+_chacha20_tracker: _PerKeyInvocationTracker = _PerKeyInvocationTracker()
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -137,7 +169,7 @@ def encrypt(
     algorithm: Algorithm = "aes-gcm",
     associated_data: bytes | None = None,
 ) -> str:
-    """Encrypt *plaintext* with *key* and return a URL-safe base64 token."""
+    """Encrypt *plaintext* with *key* and return a URL-safe base64 token.""".format(RECOMMENDED_MAX_KEY_INVOCATIONS)
     if not plaintext:
         raise InputValidationError(
             "Plaintext must not be empty. "
@@ -154,8 +186,13 @@ def encrypt(
     try:
         _validate_key(key, key_size)
 
+        # Increment the per-algorithm, per-key invocation counter.
+        # Both AES-256-GCM and ChaCha20-Poly1305 use 96-bit random nonces and
+        # share the same NIST birthday-bound limit of 2^32 encryptions per key.
         if algo_tag == _AES_TAG:
-            _key_tracker.record_and_check(key)
+            _aes_gcm_tracker.record_and_check(key, algorithm="AES-256-GCM")
+        elif algo_tag == _CHACHA_TAG:
+            _chacha20_tracker.record_and_check(key, algorithm="ChaCha20-Poly1305")
 
         nonce = secrets.token_bytes(nonce_size)
 
