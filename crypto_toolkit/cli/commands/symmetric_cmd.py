@@ -1,9 +1,4 @@
-"""symmetric_cmd.py — `crypto-toolkit encrypt` / `crypto-toolkit decrypt`.
-
-Covers raw-key AES-256-GCM / ChaCha20-Poly1305 encryption and the
-password-based (Argon2id-via-pbe) path. File encryption lives in
-file_cmd.py; RSA-OAEP lives in rsa_cmd.py.
-"""
+"""symmetric_cmd.py — `crypto-toolkit encrypt` / `crypto-toolkit decrypt`."""
 
 from __future__ import annotations
 
@@ -69,9 +64,7 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Encrypt data using AES-256-GCM or ChaCha20-Poly1305."""
-        # F-05 — warn when plaintext is supplied as a positional argument:
-        # the string is visible in shell history, /proc/<pid>/cmdline, and
-        # system audit logs.  --stdin or --input-file are the safe alternatives.
+
         if plaintext is not None:
             output.warn(
                 "Plaintext supplied as a command-line argument. "
@@ -165,12 +158,7 @@ def register(app: typer.Typer) -> None:
                 password_env=password_env,
                 confirm=False, enforce_min_length=False,
             )
-            # enforce_min_length=False: the CLI already resolves the password
-            # without a length check (enforce_min_length=False above) for
-            # backward-compatibility with ciphertexts created before the
-            # minimum-length policy was introduced.  The library default is
-            # True; we opt out here on the CLI decrypt path only.
-            plaintext = pbe.password_decrypt(raw_token, resolved, enforce_min_length=False)
+            plaintext = pbe.password_decrypt(raw_token, resolved)
         elif key_hex:
             key = _parse_hex(key_hex, "--key", sensitive=True)
             plaintext = symmetric.decrypt(raw_token, key)
